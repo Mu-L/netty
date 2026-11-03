@@ -18,8 +18,8 @@ package io.netty.handler.codec.http.multipart;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
-import io.netty.handler.codec.http.DefaultHttpRequest;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
+import io.netty.handler.codec.http.DefaultHttpRequest;
 import io.netty.handler.codec.http.HttpConstants;
 import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpMethod;
@@ -31,20 +31,29 @@ import io.netty.handler.codec.http.multipart.HttpPostRequestEncoder.ErrorDataEnc
 import io.netty.util.CharsetUtil;
 import io.netty.util.internal.StringUtil;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_DISPOSITION;
 import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_LENGTH;
 import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TRANSFER_ENCODING;
 import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE;
+import static io.netty.handler.codec.http.HttpMethod.POST;
+import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
+import static io.netty.handler.codec.http.multipart.HttpPostBodyUtil.chunkSize;
+import static io.netty.util.CharsetUtil.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
 /** {@link HttpPostRequestEncoder} test case. */
 public class HttpPostRequestEncoderTest {
@@ -59,12 +68,12 @@ public class HttpPostRequestEncoderTest {
         shouldThrowExceptionIfNotAllowed(HttpMethod.GET);
         shouldThrowExceptionIfNotAllowed(HttpMethod.HEAD);
         shouldThrowExceptionIfNotAllowed(HttpMethod.OPTIONS);
-        try {
-            shouldThrowExceptionIfNotAllowed(HttpMethod.TRACE);
-            fail("Should raised an exception with TRACE method");
-        } catch (ErrorDataEncoderException e) {
-            // Exception is willing
-        }
+        assertThrows(ErrorDataEncoderException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                shouldThrowExceptionIfNotAllowed(HttpMethod.TRACE);
+            }
+        });
     }
 
     private void shouldThrowExceptionIfNotAllowed(HttpMethod method) throws Exception {
@@ -401,7 +410,7 @@ public class HttpPostRequestEncoderTest {
         checkNextChunkSize(encoder, 8080);
 
         HttpContent httpContent = encoder.readChunk((ByteBufAllocator) null);
-        assertTrue(httpContent instanceof LastHttpContent, "Expected LastHttpContent is not received");
+        assertInstanceOf(LastHttpContent.class, httpContent, "Expected LastHttpContent is not received");
         httpContent.release();
 
            assertTrue(encoder.isEndOfInput(), "Expected end of input is not receive");
@@ -423,7 +432,7 @@ public class HttpPostRequestEncoderTest {
         checkNextChunkSize(encoder, 8080);
 
         HttpContent httpContent = encoder.readChunk((ByteBufAllocator) null);
-        assertTrue(httpContent instanceof LastHttpContent, "Expected LastHttpContent is not received");
+        assertInstanceOf(LastHttpContent.class, httpContent, "Expected LastHttpContent is not received");
         httpContent.release();
 
         assertTrue(encoder.isEndOfInput(), "Expected end of input is not receive");
@@ -467,5 +476,49 @@ public class HttpPostRequestEncoderTest {
 
         assertTrue(encoder.isEndOfInput());
         encoder.cleanFiles();
+    }
+
+    @Test
+    public void testEncodeChunkedContentV2() throws Exception {
+        final Map<String, String> params = new LinkedHashMap<String, String>();
+        params.put("data", largeText("data", 3));
+        params.put("empty", "");
+        params.put("tiny", "a");
+        params.put("large", generateString(chunkSize - 7 - 7 - 1 - 8));
+        params.put("huge", largeText("huge", 8));
+        params.put("small", "abcd");
+
+        final StringBuilder expectQueryStr = new StringBuilder();
+        final HttpRequest req = new DefaultHttpRequest(HTTP_1_1, POST, "/");
+        final HttpPostRequestEncoder encoder = new HttpPostRequestEncoder(req, false);
+        for (Entry<String, String> entry : params.entrySet()) {
+            final String key = entry.getKey();
+            final String value = entry.getValue();
+            encoder.addBodyAttribute(key, value);
+            expectQueryStr.append(key).append('=').append(value).append('&');
+        }
+        expectQueryStr.setLength(expectQueryStr.length() - 1); //remove last '&'
+        assertNotNull(encoder.finalizeRequest());
+
+        final StringBuilder chunks = new StringBuilder();
+        while (!encoder.isEndOfInput()) {
+            final HttpContent httpContent = encoder.readChunk((ByteBufAllocator) null);
+            chunks.append(httpContent.content().toString(UTF_8));
+            httpContent.release();
+        }
+
+        assertTrue(encoder.isEndOfInput());
+        assertEquals(expectQueryStr.toString(), chunks.toString());
+        encoder.cleanFiles();
+    }
+
+    private String largeText(String key, int multipleChunks) {
+        return generateString(chunkSize * multipleChunks - key.length() - 2); // 2 is '=' and '&'
+    }
+
+    private String generateString(int length) {
+        final char[] array = new char[length];
+        Arrays.fill(array, 'a');
+        return new String(array);
     }
 }

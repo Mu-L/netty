@@ -47,7 +47,6 @@ import java.util.concurrent.Executor;
 import static io.netty.channel.internal.ChannelUtils.MAX_BYTES_PER_GATHERING_WRITE_ATTEMPTED_LOW_THRESHOLD;
 import static io.netty.channel.internal.ChannelUtils.WRITE_STATUS_SNDBUF_FULL;
 
-@UnstableApi
 public abstract class AbstractKQueueStreamChannel extends AbstractKQueueChannel implements DuplexChannel {
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(AbstractKQueueStreamChannel.class);
     private static final ChannelMetadata METADATA = new ChannelMetadata(false, 16);
@@ -518,7 +517,6 @@ public abstract class AbstractKQueueStreamChannel extends AbstractKQueueChannel 
             final ChannelPipeline pipeline = pipeline();
             final ByteBufAllocator allocator = config.getAllocator();
             allocHandle.reset(config);
-            readReadyBefore();
 
             ByteBuf byteBuf = null;
             boolean close = false;
@@ -563,13 +561,15 @@ public abstract class AbstractKQueueStreamChannel extends AbstractKQueueChannel 
                 allocHandle.readComplete();
                 pipeline.fireChannelReadComplete();
 
-                if (close) {
+                if (close || allocHandle.isReadEOF()) {
                     shutdownInput(false);
                 }
             } catch (Throwable t) {
                 handleReadException(pipeline, byteBuf, t, close, allocHandle);
             } finally {
-                readReadyFinally(config);
+                if (shouldStopReading(config)) {
+                    clearReadFilter0();
+                }
             }
         }
 

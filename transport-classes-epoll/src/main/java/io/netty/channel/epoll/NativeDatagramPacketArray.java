@@ -66,9 +66,8 @@ final class NativeDatagramPacketArray {
             // recvmmsg(...) / sendmmsg(...) call, we will try again later.
             return false;
         }
-        if (len == 0) {
-            return true;
-        }
+        // A zero-length datagram is valid and gets a packet with no iovecs: skipping it here would make
+        // EpollDatagramChannel.doWrite(...) remove the wrong messages for the packets sendmmsg reports as sent.
         int offset = iovArray.count();
         if (offset == Limits.IOV_MAX || !iovArray.add(buf, index, len)) {
             // Not enough space to hold the whole content, we will try again later.
@@ -188,7 +187,7 @@ final class NativeDatagramPacketArray {
             this.segmentSize = segmentSize;
 
             this.senderScopeId = 0;
-            this.senderPort = 0;
+            this.senderPort = -1;
             this.senderAddrLen = 0;
 
             if (recipient == null) {
@@ -210,7 +209,7 @@ final class NativeDatagramPacketArray {
         }
 
         boolean hasSender() {
-            return senderPort > 0;
+            return senderPort >= 0;
         }
 
         DatagramPacket newDatagramPacket(ByteBuf buffer, InetSocketAddress recipient) throws UnknownHostException {
@@ -219,11 +218,14 @@ final class NativeDatagramPacketArray {
                 recipient = newAddress(recipientAddr, recipientAddrLen, recipientPort, recipientScopeId, ipv4Bytes);
             }
 
+            // Slice out the buffer with the correct length.
+            ByteBuf slice = buffer.retainedSlice(buffer.readerIndex(), count);
+
             // UDP_GRO
             if (segmentSize > 0) {
-                return new SegmentedDatagramPacket(buffer, segmentSize, recipient, sender);
+                return new SegmentedDatagramPacket(slice, segmentSize, recipient, sender);
             }
-            return new DatagramPacket(buffer, recipient, sender);
+            return new DatagramPacket(slice, recipient, sender);
         }
     }
 }

@@ -20,11 +20,9 @@ import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.MessageToMessageEncoder;
 import io.netty.util.internal.ObjectUtil;
-import io.netty.util.internal.UnstableApi;
 
 import java.util.List;
 
-@UnstableApi
 @ChannelHandler.Sharable
 public final class TcpDnsResponseEncoder extends MessageToMessageEncoder<DnsResponse> {
     private final DnsRecordEncoder encoder;
@@ -46,11 +44,17 @@ public final class TcpDnsResponseEncoder extends MessageToMessageEncoder<DnsResp
     @Override
     protected void encode(ChannelHandlerContext ctx, DnsResponse response, List<Object> out) throws Exception {
         ByteBuf buf = ctx.alloc().ioBuffer(1024);
-
-        buf.writerIndex(buf.writerIndex() + 2);
-        DnsMessageUtil.encodeDnsResponse(encoder, response, buf);
-        buf.setShort(0, buf.readableBytes() - 2);
-
-        out.add(buf);
+        boolean success = false;
+        try {
+            buf.writerIndex(buf.writerIndex() + 2);
+            DnsMessageUtil.encodeDnsResponse(encoder, response, buf);
+            DnsCodecUtil.setTcpMessageLength(buf);
+            out.add(buf);
+            success = true;
+        } finally {
+            if (!success) {
+                buf.release();
+            }
+        }
     }
 }

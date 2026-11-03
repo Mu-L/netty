@@ -33,8 +33,8 @@ import io.netty.channel.unix.UnixChannelUtil;
 import io.netty.util.UncheckedBooleanSupplier;
 import io.netty.util.internal.ObjectUtil;
 import io.netty.util.internal.StringUtil;
-import io.netty.util.internal.UnstableApi;
 
+import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
@@ -46,7 +46,6 @@ import java.nio.channels.UnresolvedAddressException;
 
 import static io.netty.channel.kqueue.BsdSocket.newSocketDgram;
 
-@UnstableApi
 public final class KQueueDatagramChannel extends AbstractKQueueDatagramChannel implements DatagramChannel {
     private static final String EXPECTED_TYPES =
             " (expected: " + StringUtil.simpleClassName(DatagramPacket.class) + ", " +
@@ -106,15 +105,23 @@ public final class KQueueDatagramChannel extends AbstractKQueueDatagramChannel i
     @Override
     public ChannelFuture joinGroup(InetAddress multicastAddress, ChannelPromise promise) {
         try {
-            NetworkInterface iface = config().getNetworkInterface();
-            if (iface == null) {
-                iface = NetworkInterface.getByInetAddress(localAddress().getAddress());
-            }
-            return joinGroup(multicastAddress, iface, null, promise);
+            return joinGroup(multicastAddress, defaultMulticastInterface(), null, promise);
         } catch (SocketException e) {
             promise.setFailure(e);
         }
         return promise;
+    }
+
+    /**
+     * Returns the interface to use when none was given: the one set via
+     * {@link io.netty.channel.ChannelOption#IP_MULTICAST_IF} or, if unset, the interface of the local address.
+     */
+    private NetworkInterface defaultMulticastInterface() throws SocketException {
+        NetworkInterface iface = config().getNetworkInterface();
+        if (iface == null) {
+            iface = NetworkInterface.getByInetAddress(localAddress().getAddress());
+        }
+        return iface;
     }
 
     @Override
@@ -156,8 +163,7 @@ public final class KQueueDatagramChannel extends AbstractKQueueDatagramChannel i
     @Override
     public ChannelFuture leaveGroup(InetAddress multicastAddress, ChannelPromise promise) {
         try {
-            return leaveGroup(
-                    multicastAddress, NetworkInterface.getByInetAddress(localAddress().getAddress()), null, promise);
+            return leaveGroup(multicastAddress, defaultMulticastInterface(), null, promise);
         } catch (SocketException e) {
             promise.setFailure(e);
         }
@@ -222,10 +228,7 @@ public final class KQueueDatagramChannel extends AbstractKQueueDatagramChannel i
     public ChannelFuture block(
             InetAddress multicastAddress, InetAddress sourceToBlock, ChannelPromise promise) {
         try {
-            return block(
-                    multicastAddress,
-                    NetworkInterface.getByInetAddress(localAddress().getAddress()),
-                    sourceToBlock, promise);
+            return block(multicastAddress, defaultMulticastInterface(), sourceToBlock, promise);
         } catch (Throwable e) {
             promise.setFailure(e);
         }
@@ -259,15 +262,15 @@ public final class KQueueDatagramChannel extends AbstractKQueueDatagramChannel i
         }
 
         final int dataLen = data.readableBytes();
-        if (dataLen == 0) {
-            return true;
-        }
-
         final long writtenBytes;
         if (data.hasMemoryAddress()) {
             long memoryAddress = data.memoryAddress();
             if (remoteAddress == null) {
-                writtenBytes = socket.writeAddress(memoryAddress, data.readerIndex(), data.writerIndex());
+                try {
+                    writtenBytes = socket.writeAddress(memoryAddress, data.readerIndex(), data.writerIndex());
+                } catch (Errors.NativeIoException e) {
+                    throw translateForConnected(e);
+                }
             } else {
                 writtenBytes = socket.sendToAddress(memoryAddress, data.readerIndex(), data.writerIndex(),
                         remoteAddress.getAddress(), remoteAddress.getPort());
@@ -294,7 +297,18 @@ public final class KQueueDatagramChannel extends AbstractKQueueDatagramChannel i
             }
         }
 
-        return writtenBytes > 0;
+        // A zero-length datagram is valid; sendto() returns 0 for it.
+        return writtenBytes > 0 || dataLen == 0;
+    }
+
+    private static IOException translateForConnected(Errors.NativeIoException e) {
+        // We need to correctly translate connect errors to match NIO behaviour.
+        if (e.expectedErr() == Errors.ERROR_ECONNREFUSED_NEGATIVE) {
+            PortUnreachableException error = new PortUnreachableException(e.getMessage());
+            error.initCause(e);
+            return error;
+        }
+        return e;
     }
 
     private static void checkUnresolved(AddressedEnvelope<?, ?> envelope) {
@@ -378,7 +392,6 @@ public final class KQueueDatagramChannel extends AbstractKQueueDatagramChannel i
             final ChannelPipeline pipeline = pipeline();
             final ByteBufAllocator allocator = config.getAllocator();
             allocHandle.reset(config);
-            readReadyBefore();
 
             Throwable exception = null;
             try {
@@ -462,7 +475,9 @@ public final class KQueueDatagramChannel extends AbstractKQueueDatagramChannel i
                     pipeline.fireExceptionCaught(exception);
                 }
             } finally {
-                readReadyFinally(config);
+                if (shouldStopReading(config)) {
+                    clearReadFilter0();
+                }
             }
         }
     }

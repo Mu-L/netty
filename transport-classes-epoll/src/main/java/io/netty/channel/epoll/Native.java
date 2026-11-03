@@ -28,6 +28,8 @@ import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.io.IOException;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.Selector;
 
@@ -51,6 +53,8 @@ import static io.netty.channel.unix.Errors.newIOException;
  */
 public final class Native {
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(Native.class);
+    static final InetAddress INET6_ANY;
+    static final InetAddress INET_ANY;
 
     static {
         Selector selector = null;
@@ -64,7 +68,14 @@ public final class Native {
             // Just ignore
         }
 
-        // Preload all classes that will be used in the OnLoad(...) function of JNI to eliminate the possiblity of a
+        try {
+            INET_ANY = InetAddress.getByName("0.0.0.0");
+            INET6_ANY = InetAddress.getByName("::");
+        } catch (UnknownHostException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+
+        // Preload all classes that will be used in the OnLoad(...) function of JNI to eliminate the possibility of a
         // class-loader deadlock. This is a workaround for https://github.com/netty/netty/issues/11209.
 
         // This needs to match all the classes that are loaded via NETTY_JNI_UTIL_LOAD_CLASS or looked up via

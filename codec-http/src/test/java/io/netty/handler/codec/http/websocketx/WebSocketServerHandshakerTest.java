@@ -16,10 +16,9 @@
 package io.netty.handler.codec.http.websocketx;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelHandler;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.DefaultHttpHeaders;
@@ -31,19 +30,16 @@ import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
-import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpRequestDecoder;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpResponseDecoder;
 import io.netty.handler.codec.http.HttpResponseEncoder;
-import io.netty.handler.codec.http.HttpResponseStatus;
-import io.netty.handler.codec.http.HttpServerCodec;
-import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.util.CharsetUtil;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static io.netty.handler.codec.http.HttpResponseStatus.*;
 import static org.junit.jupiter.api.Assertions.*;
@@ -117,7 +113,7 @@ public abstract class WebSocketServerHandshakerTest {
                                                              "ws://example.com/chat");
         request.headers().set("x-client-header", "value");
         try {
-            serverHandshaker.handshake(null, request, null, null);
+            serverHandshaker.handshake((Channel) null, request, null, null);
         } catch (WebSocketServerHandshakeException exception) {
             assertNotNull(exception.getMessage());
             assertEquals(request.headers(), exception.request().headers());
@@ -182,5 +178,82 @@ public abstract class WebSocketServerHandshakerTest {
         }
 
         assertFalse(channel.finish());
+    }
+
+    @Test
+    public void testHandshakeExceptionWhenConnectionHeaderIsAbsent() {
+        final WebSocketServerHandshaker serverHandshaker = newHandshaker("ws://example.com/chat",
+                "chat", WebSocketDecoderConfig.DEFAULT);
+        final FullHttpRequest request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET,
+                "ws://example.com/chat");
+        request.headers()
+                .set(HttpHeaderNames.HOST, "server.example.com")
+                .set(HttpHeaderNames.UPGRADE, HttpHeaderValues.WEBSOCKET)
+                .set(HttpHeaderNames.SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+                .set(HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, "http://example.com")
+                .set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL, "chat, superchat")
+                .set(HttpHeaderNames.SEC_WEBSOCKET_VERSION, "13");
+        Throwable exception = assertThrows(WebSocketServerHandshakeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                serverHandshaker.handshake((Channel) null, request, null, null);
+            }
+        });
+
+        assertEquals("not a WebSocket request: a |Connection| header must include a token 'Upgrade'",
+                exception.getMessage());
+        assertTrue(request.release());
+    }
+
+    @Test
+    public void testHandshakeExceptionWhenInvalidConnectionHeader() {
+        final WebSocketServerHandshaker serverHandshaker = newHandshaker("ws://example.com/chat",
+                "chat", WebSocketDecoderConfig.DEFAULT);
+        final FullHttpRequest request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET,
+                "ws://example.com/chat");
+        request.headers()
+                .set(HttpHeaderNames.HOST, "server.example.com")
+                .set(HttpHeaderNames.CONNECTION, "close")
+                .set(HttpHeaderNames.UPGRADE, HttpHeaderValues.WEBSOCKET)
+                .set(HttpHeaderNames.SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+                .set(HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, "http://example.com")
+                .set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL, "chat, superchat")
+                .set(HttpHeaderNames.SEC_WEBSOCKET_VERSION, "13");
+        Throwable exception = assertThrows(WebSocketServerHandshakeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                serverHandshaker.handshake((Channel) null, request, null, null);
+            }
+        });
+
+        assertEquals("not a WebSocket request: a |Connection| header must include a token 'Upgrade'",
+                exception.getMessage());
+        assertTrue(request.release());
+    }
+
+    @Test
+    public void testHandshakeExceptionWhenInvalidUpgradeHeader() {
+        final WebSocketServerHandshaker serverHandshaker = newHandshaker("ws://example.com/chat",
+                "chat", WebSocketDecoderConfig.DEFAULT);
+        final FullHttpRequest request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET,
+                "ws://example.com/chat");
+        request.headers()
+                .set(HttpHeaderNames.HOST, "server.example.com")
+                .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.UPGRADE)
+                .set(HttpHeaderNames.UPGRADE, "my_websocket")
+                .set(HttpHeaderNames.SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+                .set(HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, "http://example.com")
+                .set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL, "chat, superchat")
+                .set(HttpHeaderNames.SEC_WEBSOCKET_VERSION, "13");
+        Throwable exception = assertThrows(WebSocketServerHandshakeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                serverHandshaker.handshake((Channel) null, request, null, null);
+            }
+        });
+
+        assertEquals("not a WebSocket request: an |Upgrade| header must containing the value 'websocket'",
+                exception.getMessage());
+        assertTrue(request.release());
     }
 }

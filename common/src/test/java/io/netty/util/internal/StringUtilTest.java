@@ -23,6 +23,7 @@ import java.util.Collections;
 
 import static io.netty.util.internal.StringUtil.NEWLINE;
 import static io.netty.util.internal.StringUtil.commonSuffixOfLength;
+import static io.netty.util.internal.StringUtil.decodeHexNibble;
 import static io.netty.util.internal.StringUtil.indexOfWhiteSpace;
 import static io.netty.util.internal.StringUtil.indexOfNonWhiteSpace;
 import static io.netty.util.internal.StringUtil.isNullOrEmpty;
@@ -32,8 +33,6 @@ import static io.netty.util.internal.StringUtil.toHexString;
 import static io.netty.util.internal.StringUtil.toHexStringPadded;
 import static io.netty.util.internal.StringUtil.unescapeCsv;
 import static io.netty.util.internal.StringUtil.unescapeCsvFields;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -51,20 +50,27 @@ public class StringUtilTest {
 
     @Test
     public void testToHexString() {
-        assertThat(toHexString(new byte[] { 0 }), is("0"));
-        assertThat(toHexString(new byte[] { 1 }), is("1"));
-        assertThat(toHexString(new byte[] { 0, 0 }), is("0"));
-        assertThat(toHexString(new byte[] { 1, 0 }), is("100"));
-        assertThat(toHexString(EmptyArrays.EMPTY_BYTES), is(""));
+        assertEquals("0", toHexString(new byte[] { 0 }));
+        assertEquals("1", toHexString(new byte[] { 1 }));
+        assertEquals("0", toHexString(new byte[] { 0, 0 }));
+        assertEquals("100", toHexString(new byte[] { 1, 0 }));
+        assertEquals("", toHexString(EmptyArrays.EMPTY_BYTES));
+    }
+
+    @Test
+    public void testDecodeHexNibbleByte() {
+        for (int i = 0; i < 256; i++) {
+            assertEquals(decodeHexNibble((char) i), decodeHexNibble((byte) i));
+        }
     }
 
     @Test
     public void testToHexStringPadded() {
-        assertThat(toHexStringPadded(new byte[]{0}), is("00"));
-        assertThat(toHexStringPadded(new byte[]{1}), is("01"));
-        assertThat(toHexStringPadded(new byte[]{0, 0}), is("0000"));
-        assertThat(toHexStringPadded(new byte[]{1, 0}), is("0100"));
-        assertThat(toHexStringPadded(EmptyArrays.EMPTY_BYTES), is(""));
+        assertEquals("00", toHexStringPadded(new byte[]{0}));
+        assertEquals("01", toHexStringPadded(new byte[]{1}));
+        assertEquals("0000", toHexStringPadded(new byte[]{0, 0}));
+        assertEquals("0100", toHexStringPadded(new byte[]{1, 0}));
+        assertEquals("", toHexStringPadded(EmptyArrays.EMPTY_BYTES));
     }
 
     @Test

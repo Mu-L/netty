@@ -26,10 +26,10 @@ import io.netty.channel.ChannelHandlerAdapter;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
-import io.netty.channel.DefaultEventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.local.LocalAddress;
 import io.netty.channel.local.LocalChannel;
+import io.netty.channel.local.LocalEventLoopGroup;
 import io.netty.channel.local.LocalServerChannel;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -62,7 +62,7 @@ public class Http2MultiplexCodecBuilderTest {
 
     @BeforeAll
     public static void init() {
-        group = new DefaultEventLoop();
+        group = new LocalEventLoopGroup(1);
     }
 
     @BeforeEach
@@ -191,27 +191,31 @@ public class Http2MultiplexCodecBuilderTest {
         Http2Headers headers = new DefaultHttp2Headers();
         childChannel.writeAndFlush(new DefaultHttp2HeadersFrame(headers));
         ByteBuf data = Unpooled.buffer(100).writeZero(100);
-        childChannel.writeAndFlush(new DefaultHttp2DataFrame(data, true));
+        try {
+            childChannel.writeAndFlush(new DefaultHttp2DataFrame(data.retainedDuplicate(), true));
 
-        Http2HeadersFrame headersFrame = serverLastInboundHandler.blockingReadInbound();
-        assertNotNull(headersFrame);
-        assertEquals(3, headersFrame.stream().id());
-        assertEquals(headers, headersFrame.headers());
+            Http2HeadersFrame headersFrame = serverLastInboundHandler.blockingReadInbound();
+            assertNotNull(headersFrame);
+            assertEquals(3, headersFrame.stream().id());
+            assertEquals(headers, headersFrame.headers());
 
-        Http2DataFrame dataFrame = serverLastInboundHandler.blockingReadInbound();
-        assertNotNull(dataFrame);
-        assertEquals(3, dataFrame.stream().id());
-        assertEquals(data.resetReaderIndex(), dataFrame.content());
-        assertTrue(dataFrame.isEndStream());
-        dataFrame.release();
+            Http2DataFrame dataFrame = serverLastInboundHandler.blockingReadInbound();
+            assertNotNull(dataFrame);
+            assertEquals(3, dataFrame.stream().id());
+            assertEquals(data, dataFrame.content());
+            assertTrue(dataFrame.isEndStream());
+            dataFrame.release();
 
-        childChannel.close();
+            childChannel.close();
 
-        Http2ResetFrame rstFrame = serverLastInboundHandler.blockingReadInbound();
-        assertNotNull(rstFrame);
-        assertEquals(3, rstFrame.stream().id());
+            Http2ResetFrame rstFrame = serverLastInboundHandler.blockingReadInbound();
+            assertNotNull(rstFrame);
+            assertEquals(3, rstFrame.stream().id());
 
-        serverLastInboundHandler.checkException();
+            serverLastInboundHandler.checkException();
+        } finally {
+            data.release();
+        }
     }
 
     @Sharable

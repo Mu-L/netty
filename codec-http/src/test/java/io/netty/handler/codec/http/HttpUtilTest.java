@@ -15,27 +15,32 @@
  */
 package io.netty.handler.codec.http;
 
+import io.netty.util.AsciiString;
 import io.netty.util.CharsetUtil;
 import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.nio.CharBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
 import static io.netty.handler.codec.http.HttpHeadersTestUtils.of;
 import static io.netty.handler.codec.http.HttpUtil.normalizeAndGetContentLength;
+import static io.netty.handler.codec.http.HttpUtil.validateToken;
 import static java.util.Collections.singletonList;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
 public class HttpUtilTest {
 
@@ -51,7 +56,8 @@ public class HttpUtilTest {
         assertFalse(HttpUtil.isOriginForm(URI.create("*")));
     }
 
-    @Test public void testRecognizesAsteriskForm() {
+    @Test
+    public void testRecognizesAsteriskForm() {
         // Asterisk form: https://tools.ietf.org/html/rfc7230#section-5.3.4
         assertTrue(HttpUtil.isAsteriskForm(URI.create("*")));
         // Origin form: https://tools.ietf.org/html/rfc7230#section-5.3.1
@@ -60,6 +66,66 @@ public class HttpUtilTest {
         assertFalse(HttpUtil.isAsteriskForm(URI.create("http://www.example.org/pub/WWW/TheProject.html")));
         // Authority form: https://tools.ietf.org/html/rfc7230#section-5.3.3
         assertFalse(HttpUtil.isAsteriskForm(URI.create("www.example.com:80")));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "http://localhost/\r\n",
+            "/r\r\n?q=1",
+            "http://localhost/\r\n?q=1",
+            "/r\r\n/?q=1",
+            "http://localhost/\r\n/?q=1",
+            "/r\r\n",
+            "http://localhost/ HTTP/1.1\r\n\r\nPOST /p HTTP/1.1\r\n\r\n",
+            "/r HTTP/1.1\r\n\r\nPOST /p HTTP/1.1\r\n\r\n",
+            "GET ",
+            " GET",
+            "HTTP/ 1.1",
+            "HTTP/\r0.9",
+            "HTTP/\n1.1",
+            "/a\tHTTP/1.0",
+            "/admin\u0000/public",
+            "/a\u000Bb",
+            "/a\fb",
+            "/a\u001Bb",
+            "/a\u007Fb",
+    })
+    public void requestLineTokenValidationMustRejectInvalidTokens(String token) throws Exception {
+        assertFalse(HttpUtil.isEncodingSafeStartLineToken(token));
+    }
+
+    @Test
+    public void requestLineTokenValidationMustRejectAllControlCharactersSpaceAndDel() {
+        for (char c = 0; c <= 0x20; c++) {
+            assertFalse(HttpUtil.isEncodingSafeStartLineToken("/a" + c + "b"), "0x" + Integer.toHexString(c));
+        }
+        assertFalse(HttpUtil.isEncodingSafeStartLineToken("/a\u007Fb"));
+    }
+
+    @Test
+    public void requestLineTokenValidationMustAcceptValidTokens() {
+        assertTrue(HttpUtil.isEncodingSafeStartLineToken("/path/to/resource?q=1&r=2"));
+        assertTrue(HttpUtil.isEncodingSafeStartLineToken("http://localhost/\u00e9"));
+        assertTrue(HttpUtil.isEncodingSafeStartLineToken(""));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = { "\t", "\u0000", "\u000B", "\f", "\u001B", "\u007F" })
+    public void defaultHttpRequestMustRejectControlCharactersInUri(final String ctl) {
+        assertThrows(IllegalArgumentException.class,
+            new Executable() {
+                @Override
+                public void execute() throws Throwable {
+                    new DefaultHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/a" + ctl + "HTTP/1.0");
+                }
+            });
+        assertThrows(IllegalArgumentException.class,
+            new Executable() {
+                @Override
+                public void execute() throws Throwable {
+                    new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/a" + ctl + "HTTP/1.0");
+                }
+            });
     }
 
     @Test
@@ -132,6 +198,38 @@ public class HttpUtilTest {
         message.headers().set(HttpHeaderNames.CONTENT_TYPE, UPPER_CASE_NORMAL_CONTENT_TYPE);
         assertEquals(CharsetUtil.UTF_8, HttpUtil.getCharset(message));
         assertEquals(CharsetUtil.UTF_8, HttpUtil.getCharset(UPPER_CASE_NORMAL_CONTENT_TYPE));
+    }
+
+    @Test
+    public void testGetCharsetWithWhitespaceBeforeNextParameter() {
+        // RFC 9110 5.6.6: parameters = *( OWS ";" OWS [ parameter ] ), so optional
+        // whitespace is allowed before the semicolon starting the next parameter
+        testGetCharsetUtf8("text/html; charset=utf-8 ; action=\"foo\"");
+    }
+
+    @Test
+    public void testGetCharsetQuotedWithWhitespaceBeforeNextParameter() {
+        testGetCharsetUtf8("text/html; charset=\"utf-8\" ; action=\"foo\"");
+    }
+
+    @Test
+    public void testGetCharsetWithWhitespaceBeforeNextParameterNonStringCharSequence() {
+        // must behave identically for a general CharSequence implementation
+        CharSequence contentType = CharBuffer.wrap("text/html; charset=utf-8 ; action=\"foo\"");
+        assertEquals(CharsetUtil.UTF_8, HttpUtil.getCharset(contentType, CharsetUtil.ISO_8859_1));
+
+        CharSequence emptyCharset = CharBuffer.wrap("text/html; charset= ; action=\"foo\"");
+        assertEquals(CharsetUtil.ISO_8859_1, HttpUtil.getCharset(emptyCharset, CharsetUtil.ISO_8859_1));
+    }
+
+    @Test
+    public void testGetCharsetWithLeadingWhitespaceIsNotAccepted() {
+        // Only trailing OWS is grammar-legal per RFC 9110 5.6.6; whitespace after '='
+        // is not, so such values keep falling back to the default charset.
+        assertEquals(CharsetUtil.ISO_8859_1,
+                HttpUtil.getCharset("text/html; charset= utf-8 ; action=\"foo\"", CharsetUtil.ISO_8859_1));
+        assertEquals(CharsetUtil.ISO_8859_1,
+                HttpUtil.getCharset("text/html; charset= ; action=\"foo\"", CharsetUtil.ISO_8859_1));
     }
 
     @Test
@@ -233,39 +331,53 @@ public class HttpUtilTest {
     }
 
     @Test
+    public void testGetMimeTypeWithWhitespaceBeforeParameter() {
+        // RFC 9110 8.3.1: parameters = *( OWS ";" OWS [ parameter ] ), so optional
+        // whitespace is allowed before the semicolon starting the first parameter
+        assertEquals("text/html", HttpUtil.getMimeType("text/html ; charset=utf-8"));
+        assertEquals("text/html", HttpUtil.getMimeType("text/html\t; charset=utf-8"));
+        assertEquals("text/html", HttpUtil.getMimeType("text/html \t ;charset=utf-8"));
+        assertEquals("text/html", HttpUtil.getMimeType("text/html ;"));
+
+        HttpMessage message = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+        message.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json ; charset=UTF-8");
+        assertEquals("application/json", HttpUtil.getMimeType(message));
+    }
+
+    @Test
     public void testGetContentLengthThrowsNumberFormatException() {
         final HttpMessage message = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
         message.headers().set(HttpHeaderNames.CONTENT_LENGTH, "bar");
-        try {
-            HttpUtil.getContentLength(message);
-            fail();
-        } catch (final NumberFormatException e) {
-            // a number format exception is expected here
-        }
+        assertThrows(NumberFormatException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                HttpUtil.getContentLength(message);
+            }
+        });
     }
 
     @Test
     public void testGetContentLengthIntDefaultValueThrowsNumberFormatException() {
         final HttpMessage message = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
         message.headers().set(HttpHeaderNames.CONTENT_LENGTH, "bar");
-        try {
-            HttpUtil.getContentLength(message, 1);
-            fail();
-        } catch (final NumberFormatException e) {
-            // a number format exception is expected here
-        }
+        assertThrows(NumberFormatException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                HttpUtil.getContentLength(message, 1);
+            }
+        });
     }
 
     @Test
     public void testGetContentLengthLongDefaultValueThrowsNumberFormatException() {
         final HttpMessage message = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
         message.headers().set(HttpHeaderNames.CONTENT_LENGTH, "bar");
-        try {
-            HttpUtil.getContentLength(message, 1L);
-            fail();
-        } catch (final NumberFormatException e) {
-            // a number format exception is expected here
-        }
+        assertThrows(NumberFormatException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                HttpUtil.getContentLength(message, 1L);
+            }
+        });
     }
 
     @Test
@@ -380,6 +492,12 @@ public class HttpUtilTest {
     }
 
     @Test
+    public void testIpv6UnresolvedExplicitAddress()  {
+        InetSocketAddress socketAddress = InetSocketAddress.createUnresolved("[2001:4860:4860:0:0:0:0:8888]", 8080);
+        assertEquals("[2001:4860:4860:0:0:0:0:8888]", HttpUtil.formatHostnameForHttp(socketAddress));
+    }
+
+    @Test
     public void testIpv4() throws Exception  {
         InetSocketAddress socketAddress = new InetSocketAddress(InetAddress.getByName("10.0.0.1"), 8080);
         assertEquals("10.0.0.1", HttpUtil.formatHostnameForHttp(socketAddress));
@@ -445,5 +563,80 @@ public class HttpUtilTest {
                 normalizeAndGetContentLength(singletonList(contentLengthField), false, false);
             }
         });
+    }
+
+    private static List<Character> validTokenChars() {
+        List<Character> list = new ArrayList<Character>();
+        for (char c = '0'; c <= '9'; c++) {
+            list.add(c);
+        }
+        for (char c = 'a'; c <= 'z'; c++) {
+            list.add(c);
+        }
+        for (char c = 'A'; c <= 'Z'; c++) {
+            list.add(c);
+        }
+
+        // Unreserved characters:
+        list.add('-');
+        list.add('.');
+        list.add('_');
+        list.add('~');
+
+        // Token special characters:
+        list.add('!');
+        list.add('#');
+        list.add('$');
+        list.add('%');
+        list.add('&');
+        list.add('\'');
+        list.add('*');
+        list.add('+');
+        list.add('^');
+        list.add('`');
+        list.add('|');
+
+        return list;
+    }
+
+    @ParameterizedTest
+    @MethodSource("validTokenChars")
+    public void testValidTokenChars(char validChar) {
+        AsciiString asciiStringToken =
+                new AsciiString(new byte[] { 'G', 'E', (byte) validChar, 'T' });
+        String token = "GE" + validChar + 'T';
+        assertEquals(-1, validateToken(asciiStringToken));
+        assertEquals(-1, validateToken(token));
+    }
+
+    @ParameterizedTest
+    @ValueSource(chars = {
+            '(', ')', ',', '/', ':', ';', '<', '=', '>', '?', '@',
+            '\"', '[', '\\', ']', '{', '}', '\u0000', ' ', '\u007f', 'ÿ'
+    })
+    public void testInvalidTokenChars(char invalidChar) {
+        AsciiString asciiStringToken =
+                new AsciiString(new byte[] { 'G', 'E', (byte) invalidChar, 'T' });
+        String token = "GE" + invalidChar + 'T';
+        assertEquals(2, validateToken(asciiStringToken));
+        assertEquals(2, validateToken(token));
+    }
+
+    @ParameterizedTest
+    @ValueSource(chars = {
+            // High-bit Truncation Candidates (verifying > 0xFF check)
+            // These characters are chosen because their lower 8 bits
+            // alias to valid US-ASCII 'tchar' values.
+            '\u0161', // 0x0161 truncates to 0x61 ('a')
+            '\u0121', // 0x0121 truncates to 0x21 ('!')
+            '\u0231', // 0x0231 truncates to 0x31 ('1')
+            '\u0361'  // 0x0361 truncates to 0x61 ('a')
+    })
+    public void testInvalidTokenCharsOutsideAsciiRange(char invalidChar) {
+        // We use a String here because AsciiString would truncate
+        // the char to a byte during construction.
+        String token = "GE" + invalidChar + 'T';
+        assertEquals(2, validateToken(token),
+            String.format("Character U+%04X should be invalid", (int) invalidChar));
     }
 }

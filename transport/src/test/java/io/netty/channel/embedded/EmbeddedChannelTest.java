@@ -35,6 +35,7 @@ import io.netty.util.concurrent.FutureListener;
 import io.netty.util.concurrent.ScheduledFuture;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.function.Executable;
 
 import java.nio.channels.ClosedChannelException;
 import java.util.ArrayDeque;
@@ -47,8 +48,10 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -76,14 +79,14 @@ public class EmbeddedChannelTest {
 
     @Test
     public void testRegistered() throws Exception {
-        EmbeddedChannel channel = new EmbeddedChannel(true, false);
+        final EmbeddedChannel channel = new EmbeddedChannel(true, false);
         assertTrue(channel.isRegistered());
-        try {
-            channel.register();
-            fail();
-        } catch (IllegalStateException expected) {
-            // This is expected the channel is registered already on an EventLoop.
-        }
+        assertThrows(IllegalStateException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                channel.register();
+            }
+        });
         assertFalse(channel.finish());
     }
 
@@ -532,22 +535,24 @@ public class EmbeddedChannelTest {
 
     @Test
     public void testEnsureOpen() throws InterruptedException {
-        EmbeddedChannel channel = new EmbeddedChannel();
+        final EmbeddedChannel channel = new EmbeddedChannel();
         channel.close().syncUninterruptibly();
 
-        try {
-            channel.writeOutbound("Hello, Netty!");
-            fail("This should have failed with a ClosedChannelException");
-        } catch (Exception expected) {
-            assertTrue(expected instanceof ClosedChannelException);
-        }
+        Exception expected = assertThrows(Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                channel.writeOutbound("Hello, Netty!");
+            }
+        });
+        assertInstanceOf(ClosedChannelException.class, expected);
 
-        try {
-            channel.writeInbound("Hello, Netty!");
-            fail("This should have failed with a ClosedChannelException");
-        } catch (Exception expected) {
-            assertTrue(expected instanceof ClosedChannelException);
-        }
+        expected = assertThrows(Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                channel.writeInbound("Hello, Netty!");
+            }
+        });
+        assertInstanceOf(ClosedChannelException.class, expected);
     }
 
     @Test
@@ -761,6 +766,33 @@ public class EmbeddedChannelTest {
         assertTrue(channel.hasPendingTasks());
         channel.runPendingTasks();
         assertFalse(channel.hasPendingTasks());
+    }
+
+    @Test
+    void testReentrantClose() {
+        EmbeddedChannel channel = new EmbeddedChannel();
+        channel.pipeline().addLast(new ChannelInboundHandlerAdapter() {
+            boolean runningRead;
+
+            @Override
+            public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                runningRead = true;
+                try {
+                    ctx.channel().close();
+                } finally {
+                    runningRead = false;
+                }
+            }
+
+            @Override
+            public void handlerRemoved(ChannelHandlerContext ctx) {
+                if (runningRead) {
+                    throw new IllegalStateException("Reentrant handlerRemoved");
+                }
+            }
+        });
+        channel.writeInbound("foo");
+        channel.checkException();
     }
 
     private static void release(ByteBuf... buffers) {

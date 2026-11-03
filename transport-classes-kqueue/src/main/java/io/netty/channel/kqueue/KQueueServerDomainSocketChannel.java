@@ -18,16 +18,14 @@ package io.netty.channel.kqueue;
 import io.netty.channel.Channel;
 import io.netty.channel.unix.DomainSocketAddress;
 import io.netty.channel.unix.ServerDomainSocketChannel;
-import io.netty.util.internal.UnstableApi;
+import io.netty.channel.unix.UnixChannelUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
-import java.io.File;
 import java.net.SocketAddress;
 
 import static io.netty.channel.kqueue.BsdSocket.newSocketDomain;
 
-@UnstableApi
 public final class KQueueServerDomainSocketChannel extends AbstractKQueueServerChannel
                                                   implements ServerDomainSocketChannel {
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(
@@ -73,9 +71,8 @@ public final class KQueueServerDomainSocketChannel extends AbstractKQueueServerC
         } finally {
             DomainSocketAddress local = this.local;
             if (local != null) {
-                // Delete the socket file if possible.
-                File socketFile = new File(local.path());
-                boolean success = socketFile.delete();
+                // Delete the socket file if possible (only if it is not a regular file, directory or symlink).
+                boolean success = UnixChannelUtil.deleteDomainSocketFile(local.path());
                 if (!success && logger.isDebugEnabled()) {
                     logger.debug("Failed to delete a domain socket file: {}", local.path());
                 }

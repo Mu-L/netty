@@ -22,22 +22,24 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
+import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponse;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolHandler.ServerHandshakeStateEvent;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.FutureListener;
 
+import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
-import static io.netty.handler.codec.http.HttpMethod.*;
-import static io.netty.handler.codec.http.HttpResponseStatus.*;
 import static io.netty.handler.codec.http.HttpUtil.*;
-import static io.netty.handler.codec.http.HttpVersion.*;
 import static io.netty.util.internal.ObjectUtil.*;
 
 /**
@@ -73,11 +75,11 @@ class WebSocketServerProtocolHandshakeHandler extends ChannelInboundHandlerAdapt
             }
 
             try {
-                if (!GET.equals(req.method())) {
-                    sendHttpResponse(ctx, req, new DefaultFullHttpResponse(HTTP_1_1, FORBIDDEN, ctx.alloc().buffer(0)));
+                if (!isOriginAllowed(req)) {
+                    // Do this before anything else so no upgrade response is ever written.
+                    sendForbiddenResponse(ctx);
                     return;
                 }
-
                 final WebSocketServerHandshakerFactory wsFactory = new WebSocketServerHandshakerFactory(
                         getWebSocketLocation(ctx.pipeline(), req, serverConfig.websocketPath()),
                         serverConfig.subprotocols(), serverConfig.decoderConfig());
@@ -94,7 +96,7 @@ class WebSocketServerProtocolHandshakeHandler extends ChannelInboundHandlerAdapt
                     WebSocketServerProtocolHandler.setHandshaker(ctx.channel(), handshaker);
                     ctx.pipeline().remove(this);
 
-                    final ChannelFuture handshakeFuture = handshaker.handshake(ctx.channel(), req);
+                    final ChannelFuture handshakeFuture = handshaker.handshake(ctx, req);
                     handshakeFuture.addListener(new ChannelFutureListener() {
                         @Override
                         public void operationComplete(ChannelFuture future) {
@@ -124,12 +126,41 @@ class WebSocketServerProtocolHandshakeHandler extends ChannelInboundHandlerAdapt
         }
     }
 
+    private boolean isOriginAllowed(HttpRequest req) {
+        Set<String> allowedOrigins = serverConfig.allowedOrigins();
+        if (allowedOrigins.isEmpty()) {
+            return true;
+        }
+        // Every Origin / Sec-WebSocket-Origin header value must be allowed, a missing header means the request did
+        // not come from a browser. Sec-WebSocket-Origin is what browsers speaking the older hybi-07 / hybi-08
+        // protocol versions send instead of Origin.
+        return areOriginsAllowed(req, HttpHeaderNames.ORIGIN, allowedOrigins) &&
+                areOriginsAllowed(req, HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, allowedOrigins);
+    }
+
+    private static boolean areOriginsAllowed(HttpRequest req, CharSequence headerName, Set<String> allowedOrigins) {
+        for (String origin : req.headers().getAll(headerName)) {
+            if (!allowedOrigins.contains(origin.trim().toLowerCase(Locale.ROOT))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static void sendForbiddenResponse(ChannelHandlerContext ctx) {
+        FullHttpResponse res = new DefaultFullHttpResponse(
+                HttpVersion.HTTP_1_1, HttpResponseStatus.FORBIDDEN, ctx.alloc().buffer(0));
+        setContentLength(res, 0);
+        setKeepAlive(res, false);
+        ctx.writeAndFlush(res).addListener(ChannelFutureListener.CLOSE);
+    }
+
     private boolean isWebSocketPath(HttpRequest req) {
         String websocketPath = serverConfig.websocketPath();
         String uri = req.uri();
-        boolean checkStartUri = uri.startsWith(websocketPath);
-        boolean checkNextUri = "/".equals(websocketPath) || checkNextUri(uri, websocketPath);
-        return serverConfig.checkStartsWith() ? (checkStartUri && checkNextUri) : uri.equals(websocketPath);
+        return serverConfig.checkStartsWith()
+                ? uri.startsWith(websocketPath) && ("/".equals(websocketPath) || checkNextUri(uri, websocketPath))
+                : uri.equals(websocketPath);
     }
 
     private boolean checkNextUri(String uri, String websocketPath) {

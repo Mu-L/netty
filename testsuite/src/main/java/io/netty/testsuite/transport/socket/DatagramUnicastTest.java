@@ -17,6 +17,7 @@ package io.netty.testsuite.transport.socket;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufHolder;
 import io.netty.buffer.CompositeByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
@@ -45,6 +46,7 @@ import java.net.SocketException;
 import java.nio.channels.NotYetConnectedException;
 import java.nio.channels.UnresolvedAddressException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
@@ -52,6 +54,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assumptions.assumeThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -179,10 +182,13 @@ public abstract class DatagramUnicastTest extends AbstractDatagramTest {
 
     private void testSimpleSend(Bootstrap sb, Bootstrap cb, ByteBuf buf, boolean bindClient,
                                 final byte[] bytes, int count) throws Throwable {
-        for (WrapType type: WrapType.values()) {
-            testSimpleSend0(sb, cb, buf.retain(), bindClient, bytes, count, type);
+        try {
+            for (WrapType type: WrapType.values()) {
+                testSimpleSend0(sb, cb, buf.retain(), bindClient, bytes, count, type);
+            }
+        } finally {
+            assertTrue(buf.release());
         }
-        assertTrue(buf.release());
     }
 
     @Test
@@ -224,23 +230,101 @@ public abstract class DatagramUnicastTest extends AbstractDatagramTest {
             }
         }).bind(newSocketAddress()).sync().channel();
 
-        SocketAddress address = server.localAddress();
-        DatagramSocket client;
         try {
-            client = new DatagramSocket(newSocketAddress());
-        } catch (IllegalArgumentException e) {
-            assumeThat(e.getMessage()).doesNotContainIgnoringCase("unsupported address type");
-            throw e;
-        }
-        SocketAddress sendAddress = address instanceof InetSocketAddress ?
-                sendToAddress((InetSocketAddress) address) : address;
-        for (int i = 0; i < 100; i++) {
+            SocketAddress address = server.localAddress();
+            DatagramSocket client;
             try {
-                client.send(new java.net.DatagramPacket(EmptyArrays.EMPTY_BYTES, 0, sendAddress));
-            } catch (BindException e) {
-                throw new TestAbortedException("JDK sockets do not support binding to these addresses.", e);
+                client = new DatagramSocket(newSocketAddress());
+            } catch (IllegalArgumentException e) {
+                assumeThat(e.getMessage()).doesNotContainIgnoringCase("unsupported address type");
+                throw e;
             }
-            semaphore.acquire();
+            try {
+                SocketAddress sendAddress = address instanceof InetSocketAddress ?
+                        sendToAddress((InetSocketAddress) address) : address;
+                for (int i = 0; i < 100; i++) {
+                    try {
+                        client.send(new java.net.DatagramPacket(EmptyArrays.EMPTY_BYTES, 0, sendAddress));
+                    } catch (BindException e) {
+                        throw new TestAbortedException("JDK sockets do not support binding to these addresses.", e);
+                    }
+                    semaphore.acquire();
+                }
+            } finally {
+                client.close();
+            }
+        } finally {
+            closeChannel(server);
+        }
+    }
+
+    @Test
+    public void testSendEmptyDatagramsInOneFlush(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<Bootstrap, Bootstrap>() {
+            @Override
+            public void run(Bootstrap bootstrap, Bootstrap bootstrap2) throws Throwable {
+                testSendEmptyDatagramsInOneFlush(bootstrap, bootstrap2);
+            }
+        });
+    }
+
+    public void testSendEmptyDatagramsInOneFlush(Bootstrap sb, Bootstrap cb) throws Throwable {
+        final String[] sent = { "A", "", "B", "", "C" };
+        final List<String> received = new ArrayList<String>();
+        // A trailing datagram, sent in its own flush, so that a duplicate of the batch would arrive first.
+        final CountDownLatch latch = new CountDownLatch(sent.length + 1);
+        Channel sc = null;
+        Channel cc = null;
+        try {
+            sc = sb.handler(new SimpleChannelInboundHandler<ByteBufHolder>() {
+                @Override
+                protected void channelRead0(ChannelHandlerContext ctx, ByteBufHolder msg) {
+                    synchronized (received) {
+                        received.add(msg.content().toString(CharsetUtil.US_ASCII));
+                    }
+                    latch.countDown();
+                }
+            }).bind(newSocketAddress()).sync().channel();
+            cc = cb.handler(new ChannelInboundHandlerAdapter()).bind(newSocketAddress()).sync().channel();
+
+            SocketAddress localAddr = sc.localAddress();
+            SocketAddress addr = localAddr instanceof InetSocketAddress ?
+                    sendToAddress((InetSocketAddress) localAddr) : localAddr;
+            final Channel client = cc;
+            final SocketAddress remote = addr;
+            final List<ChannelFuture> futures = new ArrayList<ChannelFuture>(sent.length);
+            // Queue all datagrams before the flush so that they are written as one batch.
+            cc.eventLoop().submit(new Runnable() {
+                @Override
+                public void run() {
+                    for (String s : sent) {
+                        ByteBuf buf = Unpooled.copiedBuffer(s, CharsetUtil.US_ASCII);
+                        futures.add(write(client, buf, remote, WrapType.NONE));
+                        // write() retained the buffer
+                        buf.release();
+                    }
+                    client.flush();
+                }
+            }).sync();
+            for (ChannelFuture future : futures) {
+                future.sync();
+            }
+            ByteBuf end = Unpooled.copiedBuffer("END", CharsetUtil.US_ASCII);
+            ChannelFuture endFuture = write(cc, end, addr, WrapType.NONE);
+            end.release();
+            cc.flush();
+            endFuture.sync();
+
+            // Each datagram must arrive exactly once, empty ones included.
+            assertTrue(latch.await(10, TimeUnit.SECONDS), "received " + received);
+            List<String> expected = new ArrayList<String>(Arrays.asList(sent));
+            expected.add("END");
+            synchronized (received) {
+                assertEquals(expected, received);
+            }
+        } finally {
+            closeChannel(cc);
+            closeChannel(sc);
         }
     }
 

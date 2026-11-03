@@ -17,7 +17,6 @@ package io.netty.handler.codec.compression;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.util.concurrent.EventExecutor;
@@ -30,7 +29,6 @@ import io.netty.util.internal.SystemPropertyUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
-import java.util.concurrent.TimeUnit;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
 
@@ -62,7 +60,6 @@ public class JdkZlibEncoder extends ZlibEncoder {
     private final CRC32 crc = new CRC32();
     private static final byte[] gzipHeader = {0x1f, (byte) 0x8b, Deflater.DEFLATED, 0, 0, 0, 0, 0, 0, 0};
     private boolean writeHeader = true;
-    private static final int THREAD_POOL_DELAY_SECONDS = 10;
 
     static {
         MAX_INITIAL_OUTPUT_BUFFER_SIZE = SystemPropertyUtil.getInt(
@@ -79,7 +76,7 @@ public class JdkZlibEncoder extends ZlibEncoder {
     }
 
     /**
-     * Creates a new zlib encoder with the default compression level ({@code 6})
+     * Creates a new zlib encoder with a compression level of ({@code 6})
      * and the default wrapper ({@link ZlibWrapper#ZLIB}).
      *
      * @throws CompressionException if failed to initialize zlib
@@ -104,7 +101,7 @@ public class JdkZlibEncoder extends ZlibEncoder {
     }
 
     /**
-     * Creates a new zlib encoder with the default compression level ({@code 6})
+     * Creates a new zlib encoder with a compression level of ({@code 6})
      * and the specified wrapper.
      *
      * @throws CompressionException if failed to initialize zlib
@@ -120,12 +117,14 @@ public class JdkZlibEncoder extends ZlibEncoder {
      * @param compressionLevel
      *        {@code 1} yields the fastest compression and {@code 9} yields the
      *        best compression.  {@code 0} means no compression.  The default
-     *        compression level is {@code 6}.
+     *        compression level can be set as {@code -1} which correlates to the underlying
+     *        {@link Deflater#DEFAULT_COMPRESSION} level.
      *
      * @throws CompressionException if failed to initialize zlib
      */
     public JdkZlibEncoder(ZlibWrapper wrapper, int compressionLevel) {
-        ObjectUtil.checkInRange(compressionLevel, 0, 9, "compressionLevel");
+        ObjectUtil.checkInRange(compressionLevel, Deflater.DEFAULT_COMPRESSION, Deflater.BEST_COMPRESSION,
+                "compressionLevel");
         ObjectUtil.checkNotNull(wrapper, "wrapper");
 
         if (wrapper == ZlibWrapper.ZLIB_OR_NONE) {
@@ -139,7 +138,7 @@ public class JdkZlibEncoder extends ZlibEncoder {
     }
 
     /**
-     * Creates a new zlib encoder with the default compression level ({@code 6})
+     * Creates a new zlib encoder with a compression level of ({@code 6})
      * and the specified preset dictionary.  The wrapper is always
      * {@link ZlibWrapper#ZLIB} because it is the only format that supports
      * the preset dictionary.
@@ -161,13 +160,15 @@ public class JdkZlibEncoder extends ZlibEncoder {
      * @param compressionLevel
      *        {@code 1} yields the fastest compression and {@code 9} yields the
      *        best compression.  {@code 0} means no compression.  The default
-     *        compression level is {@code 6}.
+     *        compression level can be set as {@code -1} which correlates to the underlying
+     *        {@link Deflater#DEFAULT_COMPRESSION} level.
      * @param dictionary  the preset dictionary
      *
      * @throws CompressionException if failed to initialize zlib
      */
     public JdkZlibEncoder(int compressionLevel, byte[] dictionary) {
-        ObjectUtil.checkInRange(compressionLevel, 0, 9, "compressionLevel");
+        ObjectUtil.checkInRange(compressionLevel, Deflater.DEFAULT_COMPRESSION, Deflater.BEST_COMPRESSION,
+                "compressionLevel");
         ObjectUtil.checkNotNull(dictionary, "dictionary");
 
         wrapper = ZlibWrapper.ZLIB;
@@ -304,22 +305,7 @@ public class JdkZlibEncoder extends ZlibEncoder {
     @Override
     public void close(final ChannelHandlerContext ctx, final ChannelPromise promise) throws Exception {
         ChannelFuture f = finishEncode(ctx, ctx.newPromise());
-        f.addListener(new ChannelFutureListener() {
-            @Override
-            public void operationComplete(ChannelFuture f) throws Exception {
-                ctx.close(promise);
-            }
-        });
-
-        if (!f.isDone()) {
-            // Ensure the channel is closed even if the write operation completes in time.
-            ctx.executor().schedule(new Runnable() {
-                @Override
-                public void run() {
-                    ctx.close(promise);
-                }
-            }, THREAD_POOL_DELAY_SECONDS, TimeUnit.SECONDS);
-        }
+        EncoderUtil.closeAfterFinishEncode(ctx, f, promise);
     }
 
     private ChannelFuture finishEncode(final ChannelHandlerContext ctx, ChannelPromise promise) {

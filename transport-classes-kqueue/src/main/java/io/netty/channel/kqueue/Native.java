@@ -57,7 +57,7 @@ final class Native {
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(Native.class);
 
     static {
-        // Preload all classes that will be used in the OnLoad(...) function of JNI to eliminate the possiblity of a
+        // Preload all classes that will be used in the OnLoad(...) function of JNI to eliminate the possibility of a
         // class-loader deadlock. This is a workaround for https://github.com/netty/netty/issues/11209.
 
         // This needs to match all the classes that are loaded via NETTY_JNI_UTIL_LOAD_CLASS or looked up via
@@ -100,7 +100,7 @@ final class Native {
     static final int NOTE_RDHUP = NOTE_READCLOSED | NOTE_CONNRESET | NOTE_DISCONNECTED;
 
     // Commonly used combinations of EV defines
-    static final short EV_ADD_CLEAR_ENABLE = (short) (EV_ADD | EV_CLEAR | EV_ENABLE);
+    static final short EV_ADD_ENABLE = (short) (EV_ADD | EV_ENABLE);
     static final short EV_DELETE_DISABLE = (short) (EV_DELETE | EV_DISABLE);
 
     static final short EVFILT_READ = evfiltRead();
@@ -142,6 +142,7 @@ final class Native {
     static native int offsetofKEventFFlags();
     static native int offsetofKEventFilter();
     static native int offsetofKeventData();
+    static native int offsetofKeventUdata();
 
     private static void loadNativeLibrary() {
         String name = PlatformDependent.normalizedOs();

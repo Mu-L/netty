@@ -17,6 +17,7 @@ package io.netty.util;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.function.Executable;
 
 import java.util.ArrayDeque;
 import java.util.Queue;
@@ -28,6 +29,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class ResourceLeakDetectorTest {
     @SuppressWarnings("unused")
@@ -109,6 +112,43 @@ public class ResourceLeakDetectorTest {
     public void testLeakSetupHints() throws Throwable {
         DefaultResource.detectorWithSetupHint.initialise();
         leakResource();
+
+        do {
+            // Trigger GC.
+            System.gc();
+            // Track another resource to trigger refqueue visiting.
+            Resource resource2 = new DefaultResource();
+            DefaultResource.detectorWithSetupHint.track(resource2).close(resource2);
+            // Give the GC something to work on.
+            for (int i = 0; i < 1000; i++) {
+                sink = System.identityHashCode(new byte[10000]);
+            }
+        } while (DefaultResource.detectorWithSetupHint.getLeaksFound() < 1 && !Thread.interrupted());
+
+        assertThat(DefaultResource.detectorWithSetupHint.getLeaksFound()).isOne();
+        DefaultResource.detectorWithSetupHint.assertNoErrors();
+    }
+
+    @Timeout(10)
+    @Test
+    public void testLeakBrokenHint() throws Throwable {
+        DefaultResource.detectorWithSetupHint.initialise();
+
+        DefaultResource.detectorWithSetupHint.failOnUntraced = false;
+        DefaultResource.detectorWithSetupHint.initialHint = new ResourceLeakHint() {
+            @Override
+            public String toHintString() {
+                throw new RuntimeException("expected failure");
+            }
+        };
+        RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                leakResource();
+            }
+        });
+        assertThat(e.getMessage()).isEqualTo("expected failure");
+        DefaultResource.detectorWithSetupHint.initialHint = DefaultResource.detectorWithSetupHint.canaryString;
 
         do {
             // Trigger GC.
@@ -210,7 +250,9 @@ public class ResourceLeakDetectorTest {
     }
 
     private static final class CreationRecordLeakDetector<T> extends ResourceLeakDetector<T> {
-        private String canaryString;
+        String canaryString;
+        Object initialHint;
+        boolean failOnUntraced = true;
 
         private final AtomicReference<Throwable> error = new AtomicReference<Throwable>();
         private final AtomicInteger leaksFound = new AtomicInteger(0);
@@ -221,6 +263,7 @@ public class ResourceLeakDetectorTest {
 
         public void initialise() {
             canaryString = "creation-canary-" + UUID.randomUUID();
+            initialHint = canaryString;
             leaksFound.set(0);
         }
 
@@ -239,7 +282,9 @@ public class ResourceLeakDetectorTest {
 
         @Override
         protected void reportUntracedLeak(String resourceType) {
-            reportError(new AssertionError("Got untraced leak w/o canary string"));
+            if (failOnUntraced) {
+                reportError(new AssertionError("Got untraced leak w/o canary string"));
+            }
             leaksFound.incrementAndGet();
         }
 
@@ -249,7 +294,7 @@ public class ResourceLeakDetectorTest {
 
         @Override
         protected Object getInitialHint(String resourceType) {
-            return canaryString;
+            return initialHint;
         }
 
         int getLeaksFound() {

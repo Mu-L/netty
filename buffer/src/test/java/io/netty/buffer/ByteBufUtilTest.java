@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.ByteOrder;
 import java.nio.charset.Charset;
@@ -33,15 +34,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static io.netty.buffer.Unpooled.unreleasableBuffer;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.greaterThan;
-import static org.hamcrest.Matchers.is;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 public class ByteBufUtilTest {
@@ -151,6 +150,69 @@ public class ByteBufUtilTest {
         assertEquals(3, ByteBufUtil.indexOf(Unpooled.copiedBuffer("aab", CharsetUtil.UTF_8), haystack));
         haystack.release();
         needle.release();
+    }
+
+    @Test
+    public void testIndexOfNeedleWithReaderIndex() {
+        ByteBuf needle = Unpooled.copiedBuffer("abc123", CharsetUtil.US_ASCII);
+        needle.readerIndex(3);
+        ByteBuf haystack = Unpooled.copiedBuffer("ab1123", CharsetUtil.US_ASCII);
+        assertEquals(3, ByteBufUtil.indexOf(needle, haystack));
+        haystack.release();
+        needle.release();
+
+        needle = Unpooled.copiedBuffer("xab", CharsetUtil.US_ASCII);
+        needle.readerIndex(1);
+        haystack = Unpooled.copiedBuffer("aab", CharsetUtil.US_ASCII);
+        assertEquals(1, ByteBufUtil.indexOf(needle, haystack));
+        haystack.release();
+        needle.release();
+    }
+
+    @Test
+    public void testIndexOfEmptyNeedle() {
+        ByteBuf haystack = Unpooled.copiedBuffer("abc", CharsetUtil.US_ASCII);
+        assertEquals(0, ByteBufUtil.indexOf(Unpooled.EMPTY_BUFFER, haystack));
+        haystack.readerIndex(1);
+        assertEquals(1, ByteBufUtil.indexOf(Unpooled.EMPTY_BUFFER, haystack));
+        haystack.readerIndex(3);
+        assertEquals(3, ByteBufUtil.indexOf(Unpooled.EMPTY_BUFFER, haystack));
+        haystack.release();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = { 0, 1, 2, 3 })
+    public void testIndexOfMatchesNaiveSearch(int needleReaderIndex) {
+        Random random = new Random(needleReaderIndex);
+        for (int i = 0; i < 10000; i++) {
+            byte[] needleBytes = new byte[2 + random.nextInt(5)];
+            byte[] haystackBytes = new byte[random.nextInt(16)];
+            byte[] prefix = new byte[needleReaderIndex];
+            for (byte[] bytes : Arrays.asList(needleBytes, haystackBytes, prefix)) {
+                for (int j = 0; j < bytes.length; j++) {
+                    bytes[j] = (byte) random.nextInt(3);
+                }
+            }
+            ByteBuf needle = Unpooled.buffer().writeBytes(prefix).writeBytes(needleBytes);
+            needle.readerIndex(prefix.length);
+            ByteBuf haystack = Unpooled.wrappedBuffer(haystackBytes);
+            assertEquals(naiveIndexOf(needleBytes, haystackBytes), ByteBufUtil.indexOf(needle, haystack));
+            needle.release();
+            haystack.release();
+        }
+    }
+
+    private static int naiveIndexOf(byte[] needle, byte[] haystack) {
+        for (int i = 0; i <= haystack.length - needle.length; i++) {
+            int j = 0;
+            while (j < needle.length && haystack[i + j] == needle[j]) {
+                j++;
+            }
+            if (j == needle.length) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     @Test
@@ -282,6 +344,72 @@ public class ByteBufUtilTest {
         assertEquals(ByteBufUtil.swapMedium(mediumValue), buf.readMediumLE());
         buf.resetReaderIndex();
         assertEquals(ByteBufUtil.swapMedium(mediumValue), buf.readMedium());
+        buf.release();
+    }
+
+    @SuppressWarnings("deprecation")
+    @ParameterizedTest(name = PARAMETERIZED_NAME)
+    @MethodSource("noUnsafe")
+    public void readUnsignedShortBE(BufferType bufferType) {
+        int shortValue = 0x1234; // unsigned short
+        int swappedShortValue = 0x3412; // swapped version of the value above
+
+        ByteBuf buf = buffer(bufferType, 2).order(ByteOrder.BIG_ENDIAN);
+        buf.writeShort(shortValue);
+        assertEquals(shortValue, ByteBufUtil.readUnsignedShortBE(buf));
+        buf.clear();
+        buf.writeShortLE(shortValue);
+        assertEquals(swappedShortValue, ByteBufUtil.readUnsignedShortBE(buf));
+        buf.release();
+
+        buf = buffer(bufferType, 2).order(ByteOrder.LITTLE_ENDIAN);
+        buf.writeShort(shortValue);
+        assertEquals(swappedShortValue, ByteBufUtil.readUnsignedShortBE(buf));
+        buf.clear();
+        buf.writeShortLE(shortValue);
+        assertEquals(swappedShortValue, ByteBufUtil.readUnsignedShortBE(buf));
+        buf.release();
+
+        shortValue = 0xfedc; // unsigned short
+        swappedShortValue = 0xdcfe; // swapped version of the value above
+
+        buf = buffer(bufferType, 2).order(ByteOrder.BIG_ENDIAN);
+        buf.writeShort(shortValue);
+        assertEquals(shortValue, ByteBufUtil.readUnsignedShortBE(buf));
+        buf.clear();
+        buf.writeShortLE(shortValue);
+        assertEquals(swappedShortValue, ByteBufUtil.readUnsignedShortBE(buf));
+        buf.release();
+
+        buf = buffer(bufferType, 2).order(ByteOrder.LITTLE_ENDIAN);
+        buf.writeShort(shortValue);
+        assertEquals(swappedShortValue, ByteBufUtil.readUnsignedShortBE(buf));
+        buf.clear();
+        buf.writeShortLE(shortValue);
+        assertEquals(swappedShortValue, ByteBufUtil.readUnsignedShortBE(buf));
+        buf.release();
+    }
+
+    @SuppressWarnings("deprecation")
+    @ParameterizedTest(name = PARAMETERIZED_NAME)
+    @MethodSource("noUnsafe")
+    public void readIntBE(BufferType bufferType) {
+        int intValue = 0x12345678;
+
+        ByteBuf buf = buffer(bufferType, 4).order(ByteOrder.BIG_ENDIAN);
+        buf.writeInt(intValue);
+        assertEquals(intValue, ByteBufUtil.readIntBE(buf));
+        buf.clear();
+        buf.writeIntLE(intValue);
+        assertEquals(ByteBufUtil.swapInt(intValue), ByteBufUtil.readIntBE(buf));
+        buf.release();
+
+        buf = buffer(bufferType, 4).order(ByteOrder.LITTLE_ENDIAN);
+        buf.writeInt(intValue);
+        assertEquals(ByteBufUtil.swapInt(intValue), ByteBufUtil.readIntBE(buf));
+        buf.clear();
+        buf.writeIntLE(intValue);
+        assertEquals(ByteBufUtil.swapInt(intValue), ByteBufUtil.readIntBE(buf));
         buf.release();
     }
 
@@ -617,7 +745,7 @@ public class ByteBufUtilTest {
     }
 
     private static void assertWrapped(ByteBuf buf) {
-        assertTrue(buf instanceof WrappedByteBuf);
+        assertInstanceOf(WrappedByteBuf.class, buf);
     }
 
     @ParameterizedTest(name = PARAMETERIZED_NAME)
@@ -681,14 +809,16 @@ public class ByteBufUtilTest {
         int invoke(Object... args);
     }
 
-    private void testInvalidSubsequences(BufferType bufferType, TestMethod method) {
-        for (int [] range : INVALID_RANGES) {
-            ByteBuf buf = buffer(bufferType, 16);
+    private void testInvalidSubsequences(BufferType bufferType, final TestMethod method) {
+        for (final int [] range : INVALID_RANGES) {
+            final ByteBuf buf = buffer(bufferType, 16);
             try {
-                method.invoke(buf, "Some UTF-8 like äÄ∏ŒŒ", range[0], range[1]);
-                fail("Did not throw IndexOutOfBoundsException for range (" + range[0] + ", " + range[1] + ")");
-            } catch (IndexOutOfBoundsException iiobe) {
-                // expected
+                assertThrows(IndexOutOfBoundsException.class, new Executable() {
+                    @Override
+                    public void execute() throws Throwable {
+                        method.invoke(buf, "Some UTF-8 like äÄ∏ŒŒ", range[0], range[1]);
+                    }
+                });
             } finally {
                 assertFalse(buf.isReadable());
                 buf.release();
@@ -820,7 +950,7 @@ public class ByteBufUtilTest {
     @ParameterizedTest(name = PARAMETERIZED_NAME)
     @MethodSource("noUnsafe")
     public void testIsTextWithInvalidIndexAndLength(BufferType bufferType) {
-        ByteBuf buffer = buffer(bufferType, 4);
+        final ByteBuf buffer = buffer(bufferType, 4);
         try {
             buffer.writeBytes(new byte[4]);
             int[][] validIndexLengthPairs = {
@@ -839,13 +969,13 @@ public class ByteBufUtilTest {
                     {5, 0},
                     {1, 5},
             };
-            for (int[] pair : invalidIndexLengthPairs) {
-                try {
-                    ByteBufUtil.isText(buffer, pair[0], pair[1], CharsetUtil.US_ASCII);
-                    fail("Expected IndexOutOfBoundsException");
-                } catch (IndexOutOfBoundsException e) {
-                    // expected
-                }
+            for (final int[] pair : invalidIndexLengthPairs) {
+                assertThrows(IndexOutOfBoundsException.class, new Executable() {
+                    @Override
+                    public void execute() throws Throwable {
+                        ByteBufUtil.isText(buffer, pair[0], pair[1], CharsetUtil.US_ASCII);
+                    }
+                });
             }
         } finally {
             buffer.release();
@@ -967,8 +1097,8 @@ public class ByteBufUtilTest {
             slice.writerIndex(0);
 
             assertTrue(slice.hasArray());
-            assertThat(slice.arrayOffset(), is(1));
-            assertThat(slice.array().length, is(buf.capacity()));
+            assertEquals(1, slice.arrayOffset());
+            assertEquals(buf.capacity(), slice.array().length);
 
             checkGetBytes(slice);
         } finally {
@@ -988,8 +1118,8 @@ public class ByteBufUtilTest {
             slice.writerIndex(0);
 
             assertTrue(slice.hasArray());
-            assertThat(slice.arrayOffset(), is(0));
-            assertThat(slice.array().length, greaterThan(slice.capacity()));
+            assertEquals(0, slice.arrayOffset());
+            assertThat(slice.array().length).isGreaterThan(slice.capacity());
 
             checkGetBytes(slice);
         } finally {

@@ -18,9 +18,9 @@ package io.netty.handler.codec.http.websocketx.extensions.compression;
 import static io.netty.handler.codec.http.websocketx.extensions.compression.
         DeflateFrameServerExtensionHandshaker.*;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.netty.handler.codec.http.websocketx.extensions.WebSocketServerExtension;
 import io.netty.handler.codec.http.websocketx.extensions.WebSocketExtensionData;
@@ -37,7 +37,8 @@ public class DeflateFrameServerExtensionHandshakerTest {
     public void testNormalHandshake() {
         // initialize
         DeflateFrameServerExtensionHandshaker handshaker =
-                new DeflateFrameServerExtensionHandshaker();
+                new DeflateFrameServerExtensionHandshaker(
+                        DeflateFrameServerExtensionHandshaker.DEFAULT_COMPRESSION_LEVEL, 0);
 
         // execute
         WebSocketServerExtension extension = handshaker.handshakeExtension(
@@ -46,15 +47,16 @@ public class DeflateFrameServerExtensionHandshakerTest {
         // test
         assertNotNull(extension);
         assertEquals(WebSocketServerExtension.RSV1, extension.rsv());
-        assertTrue(extension.newExtensionDecoder() instanceof PerFrameDeflateDecoder);
-        assertTrue(extension.newExtensionEncoder() instanceof PerFrameDeflateEncoder);
+        assertInstanceOf(PerFrameDeflateDecoder.class, extension.newExtensionDecoder());
+        assertInstanceOf(PerFrameDeflateEncoder.class, extension.newExtensionEncoder());
     }
 
     @Test
     public void testWebkitHandshake() {
         // initialize
         DeflateFrameServerExtensionHandshaker handshaker =
-                new DeflateFrameServerExtensionHandshaker();
+                new DeflateFrameServerExtensionHandshaker(
+                        DeflateFrameServerExtensionHandshaker.DEFAULT_COMPRESSION_LEVEL, 0);
 
         // execute
         WebSocketServerExtension extension = handshaker.handshakeExtension(
@@ -63,15 +65,16 @@ public class DeflateFrameServerExtensionHandshakerTest {
         // test
         assertNotNull(extension);
         assertEquals(WebSocketServerExtension.RSV1, extension.rsv());
-        assertTrue(extension.newExtensionDecoder() instanceof PerFrameDeflateDecoder);
-        assertTrue(extension.newExtensionEncoder() instanceof PerFrameDeflateEncoder);
+        assertInstanceOf(PerFrameDeflateDecoder.class, extension.newExtensionDecoder());
+        assertInstanceOf(PerFrameDeflateEncoder.class, extension.newExtensionEncoder());
     }
 
     @Test
     public void testFailedHandshake() {
         // initialize
         DeflateFrameServerExtensionHandshaker handshaker =
-                new DeflateFrameServerExtensionHandshaker();
+                new DeflateFrameServerExtensionHandshaker(
+                        DeflateFrameServerExtensionHandshaker.DEFAULT_COMPRESSION_LEVEL, 0);
 
         Map<String, String> parameters;
         parameters = new HashMap<String, String>();

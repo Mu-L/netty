@@ -50,6 +50,10 @@ public final class HttpHeaderNames {
      */
     public static final AsciiString ACCEPT_PATCH = AsciiString.cached("accept-patch");
     /**
+     * {@code "accept-query"}
+     */
+    public static final AsciiString ACCEPT_QUERY = AsciiString.cached("accept-query");
+    /**
      * {@code "access-control-allow-credentials"}
      */
     public static final AsciiString ACCESS_CONTROL_ALLOW_CREDENTIALS =
@@ -376,6 +380,11 @@ public final class HttpHeaderNames {
      * {@code "x-requested-with"}
      */
     public static final AsciiString X_REQUESTED_WITH = AsciiString.cached("x-requested-with");
+
+    /**
+     * {@code "alt-svc"}
+     */
+    public static final AsciiString ALT_SVC = AsciiString.cached("alt-svc");
 
     private HttpHeaderNames() { }
 }

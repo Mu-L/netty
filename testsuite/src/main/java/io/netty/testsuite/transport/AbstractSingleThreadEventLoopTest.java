@@ -28,12 +28,16 @@ import io.netty.channel.local.LocalServerChannel;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
+import io.netty.util.concurrent.ScheduledFuture;
+import io.netty.util.internal.PlatformDependent;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -41,16 +45,16 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 public abstract class AbstractSingleThreadEventLoopTest {
-
+    @Test
     @Timeout(value = 5000, unit = TimeUnit.MILLISECONDS)
     public void testChannelsRegistered() throws Exception {
         EventLoopGroup group = newEventLoopGroup();
@@ -126,7 +130,7 @@ public abstract class AbstractSingleThreadEventLoopTest {
 
         // Not close the Channel to ensure the EventLoop is still shutdown in time.
         ChannelFuture cf = serverChannelClass() == LocalServerChannel.class
-                ? b.bind(new LocalAddress("local")) : b.bind(0);
+                ? b.bind(new LocalAddress(AbstractSingleThreadEventLoopTest.class)) : b.bind(0);
         cf.sync().channel();
 
         Future<?> f = loop.shutdownGracefully(0, 1, TimeUnit.MINUTES);
@@ -266,6 +270,39 @@ public abstract class AbstractSingleThreadEventLoopTest {
         }
     }
 
+    @Test
+    void schedulingAndCancellingTasks() throws Exception {
+        Runnable runnable = new Runnable() {
+            @Override
+            public void run() {
+            }
+        };
+        List<ScheduledFuture<?>> tasks = new ArrayList<ScheduledFuture<?>>();
+        EventLoopGroup group = newEventLoopGroup();
+        try {
+            EventLoop eventLoop = group.next();
+            for (int i = 0; i < 5000; i++) {
+                tasks.add(eventLoop.scheduleAtFixedRate(runnable, 1, 1, MILLISECONDS));
+                if (tasks.size() > 500) {
+                    tasks.get(PlatformDependent.threadLocalRandom().nextInt(tasks.size())).cancel(false);
+                }
+            }
+            for (ScheduledFuture<?> task : tasks) {
+                task.cancel(false);
+            }
+            for (ScheduledFuture<?> task : tasks) {
+                task.await();
+            }
+            for (ScheduledFuture<?> task : tasks) {
+                if (!task.isCancelled()) {
+                    task.sync();
+                }
+            }
+        } finally {
+            group.shutdownGracefully();
+        }
+    }
+
     private static void runBlockingOn(EventLoop eventLoop, final Runnable action) {
         final Promise<Void> promise = eventLoop.newPromise();
             eventLoop.execute(new Runnable() {
@@ -298,13 +335,13 @@ public abstract class AbstractSingleThreadEventLoopTest {
         public void run() { }
     };
 
-    private static void assertRejection(EventExecutor loop) {
-        try {
-            loop.execute(NOOP);
-            fail("A task must be rejected after shutdown() is called.");
-        } catch (RejectedExecutionException e) {
-            // Expected
-        }
+    private static void assertRejection(final EventExecutor loop) {
+        assertThrows(RejectedExecutionException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                loop.execute(NOOP);
+            }
+        });
     }
 
     protected boolean supportsChannelIteration() {

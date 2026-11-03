@@ -15,18 +15,22 @@
  */
 package io.netty.handler.codec.http.cors;
 
+import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
+import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpHeaders;
+import io.netty.handler.codec.http.DefaultHttpHeadersFactory;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpUtil;
+import io.netty.util.ReferenceCountUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -45,6 +49,10 @@ import static io.netty.util.internal.ObjectUtil.checkNotNull;
  * <p>
  * This handler can be configured using one or more {@link CorsConfig}, please
  * refer to this class for details about the configuration options available.
+ * <p>
+ * If CORS support is enabled for at least one {@link CorsConfig}, every response written
+ * by this handler will carry {@code Vary: Origin}, including responses to requests without
+ * {@code Origin} header or with an origin that is not allowed.
  */
 public class CorsHandler extends ChannelDuplexHandler {
 
@@ -56,6 +64,8 @@ public class CorsHandler extends ChannelDuplexHandler {
     private HttpRequest request;
     private final List<CorsConfig> configList;
     private final boolean isShortCircuit;
+    private final boolean varyOnOrigin;
+    private boolean consumeContent;
 
     /**
      * Creates a new instance with a single {@link CorsConfig}.
@@ -75,6 +85,16 @@ public class CorsHandler extends ChannelDuplexHandler {
         checkNonEmpty(configList, "configList");
         this.configList = configList;
         this.isShortCircuit = isShortCircuit;
+        this.varyOnOrigin = isCorsSupportEnabled();
+    }
+
+    private boolean isCorsSupportEnabled() {
+        for (CorsConfig config : configList) {
+            if (config.isCorsSupportEnabled()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -85,18 +105,38 @@ public class CorsHandler extends ChannelDuplexHandler {
             config = getForOrigin(origin);
             if (isPreflightRequest(request)) {
                 handlePreflight(ctx, request);
+                // Enable consumeContent so that all following HttpContent
+                // for this request will be released and not propagated downstream.
+                consumeContent = true;
                 return;
             }
             if (isShortCircuit && !(origin == null || config != null)) {
                 forbidden(ctx, request);
+                consumeContent = true;
                 return;
             }
+
+            // This request is forwarded, stop discarding
+            consumeContent = false;
+            ctx.fireChannelRead(msg);
+            return;
         }
+
+        if (consumeContent && (msg instanceof HttpContent)) {
+            ReferenceCountUtil.release(msg);
+            return;
+        }
+
         ctx.fireChannelRead(msg);
     }
 
     private void handlePreflight(final ChannelHandlerContext ctx, final HttpRequest request) {
-        final HttpResponse response = new DefaultFullHttpResponse(request.protocolVersion(), OK, true, true);
+        final HttpResponse response = new DefaultFullHttpResponse(
+                request.protocolVersion(),
+                OK,
+                Unpooled.buffer(0),
+                DefaultHttpHeadersFactory.headersFactory().withCombiningHeaders(true),
+                DefaultHttpHeadersFactory.trailersFactory().withCombiningHeaders(true));
         if (setOrigin(response)) {
             setAllowMethods(response);
             setAllowHeaders(response);
@@ -130,7 +170,7 @@ public class CorsHandler extends ChannelDuplexHandler {
             if (corsConfig.origins().contains(requestOrigin)) {
                 return corsConfig;
             }
-            if (corsConfig.isNullOriginAllowed() || NULL_ORIGIN.equals(requestOrigin)) {
+            if (corsConfig.isNullOriginAllowed() && NULL_ORIGIN.equals(requestOrigin)) {
                 return corsConfig;
             }
         }
@@ -142,6 +182,7 @@ public class CorsHandler extends ChannelDuplexHandler {
         if (origin != null && config != null) {
             if (NULL_ORIGIN.equals(origin) && config.isNullOriginAllowed()) {
                 setNullOrigin(response);
+                setVaryHeader(response);
                 return true;
             }
             if (config.isAnyOriginSupported()) {
@@ -168,7 +209,9 @@ public class CorsHandler extends ChannelDuplexHandler {
     }
 
     private static void setVaryHeader(final HttpResponse response) {
-        response.headers().set(HttpHeaderNames.VARY, HttpHeaderNames.ORIGIN);
+        if (!response.headers().containsValue(HttpHeaderNames.VARY, HttpHeaderNames.ORIGIN, true)) {
+            response.headers().add(HttpHeaderNames.VARY, HttpHeaderNames.ORIGIN);
+        }
     }
 
     private static void setAnyOrigin(final HttpResponse response) {
@@ -228,11 +271,14 @@ public class CorsHandler extends ChannelDuplexHandler {
     @Override
     public void write(final ChannelHandlerContext ctx, final Object msg, final ChannelPromise promise)
             throws Exception {
-        if (config != null && config.isCorsSupportEnabled() && msg instanceof HttpResponse) {
+        if (msg instanceof HttpResponse) {
             final HttpResponse response = (HttpResponse) msg;
-            if (setOrigin(response)) {
+            if (config != null && config.isCorsSupportEnabled() && setOrigin(response)) {
                 setAllowCredentials(response);
                 setExposeHeaders(response);
+            }
+            if (varyOnOrigin) {
+                setVaryHeader(response);
             }
         }
         ctx.write(msg, promise);

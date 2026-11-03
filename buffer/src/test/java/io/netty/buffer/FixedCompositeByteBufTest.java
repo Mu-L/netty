@@ -33,7 +33,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
 public class FixedCompositeByteBufTest {
 
@@ -475,13 +474,15 @@ public class FixedCompositeByteBufTest {
         }
 
         ByteBuf buf2 = directBuffer(10);
-        ByteBuf buf = newBuffer(buf1, buf2);
+        final ByteBuf buf = newBuffer(buf1, buf2);
         assertFalse(buf.hasMemoryAddress());
         try {
-            buf.memoryAddress();
-            fail();
-        } catch (UnsupportedOperationException expected) {
-            // expected
+            assertThrows(UnsupportedOperationException.class, new Executable() {
+                @Override
+                public void execute() throws Throwable {
+                    buf.memoryAddress();
+                }
+            });
         } finally {
             buf.release();
         }
@@ -502,7 +503,10 @@ public class FixedCompositeByteBufTest {
         assertTrue(buf.hasArray());
         assertArrayEquals(EMPTY_BUFFER.array(), buf.array());
         assertEquals(EMPTY_BUFFER.isDirect(), buf.isDirect());
-        assertEquals(EMPTY_BUFFER.memoryAddress(), buf.memoryAddress());
+        assertEquals(EMPTY_BUFFER.hasMemoryAddress(), buf.hasMemoryAddress());
+        if (buf.hasMemoryAddress()) {
+            assertEquals(EMPTY_BUFFER.memoryAddress(), buf.memoryAddress());
+        }
         buf.release();
     }
 

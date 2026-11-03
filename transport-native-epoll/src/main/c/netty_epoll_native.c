@@ -86,7 +86,7 @@
 extern int epoll_create1(int flags) __attribute__((weak));
 extern int epoll_pwait2(int epfd, struct epoll_event *events, int maxevents, const struct timespec *timeout, const sigset_t *sigmask) __attribute__((weak));
 
-#ifndef __USE_GNU
+#ifndef _GNU_SOURCE
 struct mmsghdr {
     struct msghdr msg_hdr;  /* Message header */
     unsigned int  msg_len;  /* Number of bytes transmitted */
@@ -243,29 +243,139 @@ static jint netty_epoll_native_epollCreate(JNIEnv* env, jclass clazz) {
             int err = errno;
             close(efd);
             netty_unix_errors_throwChannelExceptionErrorNo(env, "fcntl() failed: ", err);
-            return err;
+            return -err;
         }
     }
     return efd;
 }
 
-static jint netty_epoll_native_epollWait(JNIEnv* env, jclass clazz, jint efd, jlong address, jint len, jint timeout) {
-    struct epoll_event *ev = (struct epoll_event*) (intptr_t) address;
-    int result, err;
+static inline jint netty_epoll_wait(JNIEnv* env, jint efd, struct epoll_event *ev, jint len, jint timeout)
+{
+    int rc;
 
-    do {
-        result = epoll_wait(efd, ev, len, timeout);
-        if (result >= 0) {
-            return result;
+    if (timeout <= 0) {
+        // avoid making unnecessary syscalls when doing non-blocking
+        // check (timeout = 0), or waiting indefinitely (timeout = -1)
+        while ((rc = epoll_wait(efd, ev, len, timeout)) < 0) {
+            if (errno != EINTR) {
+                return -errno;
+            }
         }
-    } while((err = errno) == EINTR);
-    return -err;
+    } else {
+        struct timespec ts;
+        long deadline, now;
+
+        if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+            netty_unix_errors_throwRuntimeExceptionErrorNo(env, "clock_gettime() failed: ", errno);
+            return -1;
+        }
+        deadline = ts.tv_sec * 1000 + ts.tv_nsec / 1000000 + timeout;
+
+        while ((rc = epoll_wait(efd, ev, len, timeout)) < 0) {
+            if (errno != EINTR) {
+                return -errno;
+            }
+
+            if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+                netty_unix_errors_throwRuntimeExceptionErrorNo(env, "clock_gettime() failed: ", errno);
+                return -1;
+            }
+
+            now = ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+            if (now >= deadline) {
+                return 0;
+            }
+            timeout = deadline - now;
+        }
+    }
+
+    return rc;
+}
+
+static jint netty_epoll_native_epollWait(JNIEnv* env, jclass clazz, jint efd, jlong address, jint len, jint timeout)
+{
+    return netty_epoll_wait(env, efd, (struct epoll_event *)(intptr_t) address, len, timeout);
+}
+
+static inline void timespec_add(struct timespec *t1, const struct timespec *t2)
+{
+    t1->tv_sec += t2->tv_sec;
+    t1->tv_nsec += t2->tv_nsec;
+    if (t1->tv_nsec > 1000000000) {
+        t1->tv_sec++;
+        t1->tv_nsec -= 1000000000;
+    }
+}
+
+static inline void timespec_sub(struct timespec *t1, const struct timespec *t2)
+{
+    t1->tv_sec -= t2->tv_sec;
+    t1->tv_nsec -= t2->tv_nsec;
+    if (t1->tv_nsec < 0) {
+        t1->tv_sec--;
+        t1->tv_nsec += 1000000000;
+    }
+}
+
+static inline int timespec_after(const struct timespec *t1, const struct timespec *t2)
+{
+    return (t1->tv_sec > t2->tv_sec) ||
+           (t1->tv_sec == t2->tv_sec && t1->tv_nsec > t2->tv_nsec);
+}
+
+static inline jint netty_epoll_pwait2(JNIEnv *env, jint efd, struct epoll_event *ev, jint len, const struct timespec *timeout)
+{
+    int rc;
+
+    if (timeout == NULL || (timeout->tv_sec == 0 && timeout->tv_nsec == 0)) {
+        // avoid making unnecessary syscalls when doing non-blocking
+        // check (timeout = { 0, 0 }), or waiting indefinitely
+        // (timeout = NULL)
+        while ((rc = epoll_pwait2(efd, ev, len, timeout, NULL)) < 0) {
+            if (errno != EINTR) {
+                return -errno;
+            }
+        }
+    } else {
+        struct timespec deadline, now, decaying_timeout;
+
+        if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) {
+            netty_unix_errors_throwRuntimeExceptionErrorNo(env, "clock_gettime() failed: ", errno);
+            return -1;
+        }
+
+        timespec_add(&deadline, timeout);
+        decaying_timeout = *timeout;
+
+        while ((rc = epoll_pwait2(efd, ev, len, &decaying_timeout, NULL)) < 0) {
+            if (errno != EINTR) {
+                return -errno;
+            }
+
+            if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+                netty_unix_errors_throwRuntimeExceptionErrorNo(env, "clock_gettime() failed: ", errno);
+                return -1;
+            }
+
+            if (timespec_after(&now, &deadline)) {
+                return 0;
+            }
+
+            decaying_timeout = deadline;
+            timespec_sub(&decaying_timeout, &now);
+        }
+    }
+
+    return rc;
 }
 
 // This needs to be consistent with Native.java
 #define EPOLL_WAIT_RESULT(V, ARM_TIMER)  ((jlong) ((uint64_t) ((uint32_t) V) << 32 | ARM_TIMER))
 
-static jlong netty_epoll_native_epollWait0(JNIEnv* env, jclass clazz, jint efd, jlong address, jint len, jint timerFd, jint tvSec, jint tvNsec, jlong millisThreshold) {
+static jlong netty_epoll_native_epollWait0(JNIEnv* env, jclass clazz, jint efd, jlong address, jint len, jint timerFd, jint tvSec, jint tvNsec, jlong millisThreshold)
+{
+    struct epoll_event *ev = (struct epoll_event *)(intptr_t) address;
+    int result;
     // only reschedule the timer if there is a newer event.
     // -1 is a special value used by EpollEventLoop.
     uint32_t armTimer = millisThreshold <= 0 ? 1 : 0;
@@ -278,15 +388,8 @@ static jlong netty_epoll_native_epollWait0(JNIEnv* env, jclass clazz, jint efd, 
                 // We have epoll_pwait2(...) and it is supported, this means we can just pass in the itimerspec directly and not need an
                 // extra syscall even for very small timeouts.
                 struct timespec ts = { tvSec, tvNsec };
-                struct epoll_event *ev = (struct epoll_event*) (intptr_t) address;
-                int result, err;
-                do {
-                    result = epoll_pwait2(efd, ev, len, &ts, NULL);
-                    if (result >= 0) {
-                        return EPOLL_WAIT_RESULT(result, armTimer);
-                    }
-                } while((err = errno) == EINTR);
-                return EPOLL_WAIT_RESULT(-err, armTimer);
+                result = netty_epoll_pwait2(env, efd, ev, len, &ts);
+                return EPOLL_WAIT_RESULT(result, armTimer);
             }
 
             int millis = tvNsec / 1000000;
@@ -297,8 +400,14 @@ static jlong netty_epoll_native_epollWait0(JNIEnv* env, jclass clazz, jint efd, 
                     // is smaller then 1 ms.
                     millis >= millisThreshold ||
                     tvSec > 0) {
-                millis += tvSec * 1000;
-                int result = netty_epoll_native_epollWait(env, clazz, efd, address, len, millis);
+                // tvSec * 1000 can overflow an int for large delays, so calculate it with 64 bits and clamp it to
+                // INT_MAX. If we clamp epoll_wait(...) just returns earlier and the EventLoop will calculate the
+                // remaining delay again.
+                int64_t timeoutMillis = (int64_t) tvSec * 1000 + millis;
+                if (timeoutMillis > INT_MAX) {
+                    timeoutMillis = INT_MAX;
+                }
+                result = netty_epoll_wait(env, efd, ev, len, (int) timeoutMillis);
                 return EPOLL_WAIT_RESULT(result, armTimer);
             }
         }
@@ -312,7 +421,7 @@ static jlong netty_epoll_native_epollWait0(JNIEnv* env, jclass clazz, jint efd, 
         }
         armTimer = 1;
     }
-    int result = netty_epoll_native_epollWait(env, clazz, efd, address, len, -1);
+    result = netty_epoll_wait(env, efd, ev, len, -1);
     return EPOLL_WAIT_RESULT(result, armTimer);
 }
 
@@ -321,6 +430,8 @@ static inline void cpu_relax() {
     asm volatile("pause\n": : :"memory");
 #elif defined(__aarch64__)
     asm volatile("isb\n": : :"memory");
+#elif defined(__riscv) && defined(__riscv_zihintpause)
+    asm volatile("pause\n": : :"memory");
 #endif
 }
 
@@ -382,6 +493,11 @@ static jint netty_epoll_native_sendmmsg0(JNIEnv* env, jclass clazz, jint fd, jbo
 
     for (i = 0; i < len; i++) {
         jobject packet = (*env)->GetObjectArrayElement(env, packets, i + offset);
+        if (packet == NULL) {
+            // This should never happen but just handle it and return early. This way if GetObjectArrayElement(...)
+            // did put an exception on the stack we will see it and not crash.
+            return -1;
+        }
         jbyteArray address = (jbyteArray) (*env)->GetObjectField(env, packet, packetRecipientAddrFieldId);
         jint addrLen = (*env)->GetIntField(env, packet, packetRecipientAddrLenFieldId);
         jint packetSegmentSize = (*env)->GetIntField(env, packet, packetSegmentSizeFieldId);
@@ -457,12 +573,11 @@ static void init_packet(JNIEnv* env, jobject packet, struct msghdr* msg, int len
     init_packet_address(env, packet, (struct sockaddr_storage*) msg->msg_name, packetSenderAddrFieldId, packetSenderAddrLenFieldId, packetSenderScopeIdFieldId, packetSenderPortFieldId);
 
     struct cmsghdr *cmsg = NULL;
-    uint16_t gso_size = 0;
-    uint16_t *gsosizeptr = NULL;
+    int gso_size = 0;
     for (cmsg = CMSG_FIRSTHDR(msg); cmsg != NULL; cmsg = CMSG_NXTHDR(msg, cmsg)) {
        if (cmsg->cmsg_level == SOL_UDP && cmsg->cmsg_type == UDP_GRO) {
-           gsosizeptr = (uint16_t *) CMSG_DATA(cmsg);
-           gso_size = *gsosizeptr;
+           // The kernel reports the segment size as an int
+           gso_size = *((int *) CMSG_DATA(cmsg));
        }
 #ifdef IP_RECVORIGDSTADDR
        else if (cmsg->cmsg_level == SOL_IP && cmsg->cmsg_type == IP_RECVORIGDSTADDR) {
@@ -478,7 +593,7 @@ static jint netty_epoll_native_recvmsg0(JNIEnv* env, jclass clazz, jint fd, jboo
     struct sockaddr_storage sock_address;
     int addrSize = sizeof(sock_address);
     // Enough space for GRO and IP_RECVORIGDSTADDR
-    char control[CMSG_SPACE(sizeof(uint16_t)) + sizeof(struct sockaddr_storage)] = { 0 };
+    char control[CMSG_SPACE(sizeof(int)) + sizeof(struct sockaddr_storage)] = { 0 };
     msg.msg_name = &sock_address;
     msg.msg_namelen = (socklen_t) addrSize;
     msg.msg_iov = (struct iovec*) (intptr_t) (*env)->GetLongField(env, packet, packetMemoryAddressFieldId);
@@ -505,30 +620,30 @@ static jint netty_epoll_native_recvmmsg0(JNIEnv* env, jclass clazz, jint fd, jbo
     int addrSize = sizeof(addr);
     memset(addr, 0, addrSize);
     int storageSize = sizeof(struct sockaddr_storage);
-    char* cntrlbuf = NULL;
-
-#ifdef IP_RECVORIGDSTADDR
-    int readLocalAddr = 0;
-    if (netty_unix_socket_getOption(env, fd, IPPROTO_IP, IP_RECVORIGDSTADDR,
-            &readLocalAddr, sizeof(readLocalAddr)) < 0) {
-        cntrlbuf = malloc(sizeof(char) * storageSize * len);
+    int controlSize = CMSG_SPACE(sizeof(int)) + storageSize;
+    char* controls = malloc(controlSize * len);
+    if (controls == NULL) {
+        return -ENOMEM;
     }
-#endif // IP_RECVORIGDSTADDR
 
     int i;
 
     for (i = 0; i < len; i++) {
         jobject packet = (*env)->GetObjectArrayElement(env, packets, i + offset);
+        if (packet == NULL) {
+            // This should never happen but just handle it and return early. This way if GetObjectArrayElement(...)
+            // did put an exception on the stack we will see it and not crash.
+            free(controls);
+            return -1;
+        }
         msg[i].msg_hdr.msg_iov = (struct iovec*) (intptr_t) (*env)->GetLongField(env, packet, packetMemoryAddressFieldId);
         msg[i].msg_hdr.msg_iovlen = (*env)->GetIntField(env, packet, packetCountFieldId);
 
         msg[i].msg_hdr.msg_name = addr + i;
-        msg[i].msg_hdr.msg_namelen = (socklen_t) addrSize;
+        msg[i].msg_hdr.msg_namelen = (socklen_t) storageSize;
 
-        if (cntrlbuf != NULL) {
-            msg[i].msg_hdr.msg_control =  cntrlbuf + i * storageSize;
-            msg[i].msg_hdr.msg_controllen = storageSize;
-        }
+        msg[i].msg_hdr.msg_control = controls + i * controlSize;
+        msg[i].msg_hdr.msg_controllen = controlSize;
     }
 
     ssize_t res;
@@ -546,8 +661,7 @@ static jint netty_epoll_native_recvmmsg0(JNIEnv* env, jclass clazz, jint fd, jbo
             init_packet(env, packet, &msg[i].msg_hdr, msg[i].msg_len);
         }
     }
-    // Free the control message buffer if needed.
-    free(cntrlbuf);
+    free(controls);
 
     if (res < 0) {
         return -err;
@@ -722,7 +836,7 @@ static JNINativeMethod* createDynamicMethodsTable(const char* packagePrefix) {
     }
     memset(dynamicMethods, 0, size);
     memcpy(dynamicMethods, fixed_method_table, sizeof(fixed_method_table));
-    
+
     JNINativeMethod* dynamicMethod = &dynamicMethods[fixed_method_table_size];
     NETTY_JNI_UTIL_PREPEND(packagePrefix, "io/netty/channel/epoll/NativeDatagramPacketArray$NativeDatagramPacket;II)I", dynamicTypeName, error);
     NETTY_JNI_UTIL_PREPEND("(IZ[L", dynamicTypeName,  dynamicMethod->signature, error);

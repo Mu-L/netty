@@ -96,6 +96,21 @@ class Hidden {
             );
 
             builder.allowBlockingCallsInside(
+                    "io.netty.buffer.AdaptivePoolingAllocator$1",
+                    "initialValue"
+            );
+
+            builder.allowBlockingCallsInside(
+                    "io.netty.buffer.AdaptivePoolingAllocator$1",
+                    "onRemoval"
+            );
+
+            builder.allowBlockingCallsInside(
+                    "io.netty.buffer.AdaptivePoolingAllocator$Magazine",
+                    "free"
+            );
+
+            builder.allowBlockingCallsInside(
                     "io.netty.handler.ssl.SslHandler",
                     "handshake"
             );
@@ -155,12 +170,23 @@ class Hidden {
                     "parseEtcResolverOptions");
 
             builder.allowBlockingCallsInside(
+                    "io.netty.resolver.dns.DnsQueryIdSpace",
+                    "nextId");
+
+            builder.allowBlockingCallsInside(
+                    "io.netty.resolver.dns.DnsQueryIdSpace$DnsQueryIdRange",
+                    "pushId");
+
+            builder.allowBlockingCallsInside(
                     "io.netty.resolver.HostsFileEntriesProvider$ParserImpl",
                     "parse");
 
             builder.allowBlockingCallsInside(
                     "io.netty.util.NetUtil$SoMaxConnAction",
                     "run");
+
+            builder.allowBlockingCallsInside("io.netty.util.internal.ReferenceCountUpdater",
+                    "retryRelease0");
 
             builder.allowBlockingCallsInside("io.netty.util.internal.PlatformDependent", "createTempFile");
             builder.nonBlockingThreadPredicate(new Function<Predicate<Thread>, Predicate<Thread>>() {

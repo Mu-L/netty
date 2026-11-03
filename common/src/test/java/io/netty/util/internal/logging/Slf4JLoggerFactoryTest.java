@@ -26,6 +26,7 @@ import java.util.Iterator;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.*;
 
@@ -43,7 +44,7 @@ public class Slf4JLoggerFactoryTest {
         Logger logger = mock(Logger.class);
         when(logger.getName()).thenReturn("testlogger");
         InternalLogger internalLogger = Slf4JLoggerFactory.wrapLogger(logger);
-        assertTrue(internalLogger instanceof Slf4JLogger);
+        assertInstanceOf(Slf4JLogger.class, internalLogger);
         assertEquals("testlogger", internalLogger.name());
     }
 
@@ -52,7 +53,7 @@ public class Slf4JLoggerFactoryTest {
         Logger logger = mock(LocationAwareLogger.class);
         when(logger.getName()).thenReturn("testlogger");
         InternalLogger internalLogger = Slf4JLoggerFactory.wrapLogger(logger);
-        assertTrue(internalLogger instanceof LocationAwareSlf4JLogger);
+        assertInstanceOf(LocationAwareSlf4JLogger.class, internalLogger);
         assertEquals("testlogger", internalLogger.name());
     }
 
@@ -89,19 +90,19 @@ public class Slf4JLoggerFactoryTest {
         internalLogger.warn("{} {} {}", "warn1", "warn2", "warn3");
 
         verify(logger, times(3)).log(ArgumentMatchers.<Marker>isNull(), eq(LocationAwareSlf4JLogger.FQCN),
-                eq(LocationAwareLogger.DEBUG_INT), captor.capture(), any(Object[].class),
+                eq(LocationAwareLogger.DEBUG_INT), captor.capture(), ArgumentMatchers.<Object[]>isNull(),
                 ArgumentMatchers.<Throwable>isNull());
         verify(logger, times(3)).log(ArgumentMatchers.<Marker>isNull(), eq(LocationAwareSlf4JLogger.FQCN),
-                eq(LocationAwareLogger.ERROR_INT), captor.capture(), any(Object[].class),
+                eq(LocationAwareLogger.ERROR_INT), captor.capture(), ArgumentMatchers.<Object[]>isNull(),
                 ArgumentMatchers.<Throwable>isNull());
         verify(logger, times(3)).log(ArgumentMatchers.<Marker>isNull(), eq(LocationAwareSlf4JLogger.FQCN),
-                eq(LocationAwareLogger.INFO_INT), captor.capture(), any(Object[].class),
+                eq(LocationAwareLogger.INFO_INT), captor.capture(), ArgumentMatchers.<Object[]>isNull(),
                 ArgumentMatchers.<Throwable>isNull());
         verify(logger, times(3)).log(ArgumentMatchers.<Marker>isNull(), eq(LocationAwareSlf4JLogger.FQCN),
-                eq(LocationAwareLogger.TRACE_INT), captor.capture(), any(Object[].class),
+                eq(LocationAwareLogger.TRACE_INT), captor.capture(), ArgumentMatchers.<Object[]>isNull(),
                 ArgumentMatchers.<Throwable>isNull());
         verify(logger, times(3)).log(ArgumentMatchers.<Marker>isNull(), eq(LocationAwareSlf4JLogger.FQCN),
-                eq(LocationAwareLogger.WARN_INT), captor.capture(), any(Object[].class),
+                eq(LocationAwareLogger.WARN_INT), captor.capture(), ArgumentMatchers.<Object[]>isNull(),
                 ArgumentMatchers.<Throwable>isNull());
 
         Iterator<String> logMessages = captor.getAllValues().iterator();

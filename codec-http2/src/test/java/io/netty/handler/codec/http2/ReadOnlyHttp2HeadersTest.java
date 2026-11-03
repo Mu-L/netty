@@ -89,6 +89,16 @@ public class ReadOnlyHttp2HeadersTest {
     }
 
     @Test
+    public void illegalValuesAreNotAllowed() {
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                ReadOnlyHttp2Headers.trailers(true, new AsciiString("foo"), new AsciiString("ba\nr"));
+            }
+        });
+    }
+
+    @Test
     public void emptyHeaderNameAllowed() {
         ReadOnlyHttp2Headers.trailers(false, AsciiString.EMPTY_STRING, new AsciiString("foo"));
     }
@@ -254,6 +264,27 @@ public class ReadOnlyHttp2HeadersTest {
         assertTrue(itr.hasNext());
         assertTrue(AsciiString.contentEqualsIgnoreCase("value3", itr.next()));
         assertFalse(itr.hasNext());
+    }
+
+    @Test
+    public void testGetNotConvertible() {
+        Http2Headers headers = ReadOnlyHttp2Headers.trailers(false,
+                new AsciiString("not-a-number"), new AsciiString("not a number"),
+                new AsciiString("empty"), AsciiString.EMPTY_STRING);
+        assertNull(headers.getByte("not-a-number"));
+        assertEquals((byte) -1, headers.getByte("not-a-number", (byte) -1));
+        assertNull(headers.getChar("empty"));
+        assertEquals('x', headers.getChar("empty", 'x'));
+        assertNull(headers.getShort("not-a-number"));
+        assertEquals((short) -1, headers.getShort("not-a-number", (short) -1));
+        assertNull(headers.getInt("not-a-number"));
+        assertEquals(-1, headers.getInt("not-a-number", -1));
+        assertNull(headers.getLong("not-a-number"));
+        assertEquals(-1L, headers.getLong("not-a-number", -1));
+        assertNull(headers.getFloat("not-a-number"));
+        assertEquals(-1f, headers.getFloat("not-a-number", -1), 0);
+        assertNull(headers.getDouble("not-a-number"));
+        assertEquals(-1d, headers.getDouble("not-a-number", -1), 0);
     }
 
     private static void testValueIteratorSingleValue(Http2Headers headers, CharSequence name, CharSequence value) {

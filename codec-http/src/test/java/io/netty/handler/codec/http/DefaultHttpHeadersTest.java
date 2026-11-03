@@ -25,13 +25,18 @@ import org.junit.jupiter.api.function.Executable;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
+import static io.netty.handler.codec.http.HttpHeaderNames.ACCEPT;
+import static io.netty.handler.codec.http.HttpHeaderNames.CONNECTION;
+import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_LENGTH;
+import static io.netty.handler.codec.http.HttpHeaderValues.APPLICATION_JSON;
+import static io.netty.handler.codec.http.HttpHeaderValues.CLOSE;
+import static io.netty.handler.codec.http.HttpHeaderValues.ZERO;
 import static io.netty.handler.codec.http.HttpHeadersTestUtils.of;
 import static io.netty.util.AsciiString.contentEquals;
 import static java.util.Arrays.asList;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -158,10 +163,10 @@ public class DefaultHttpHeadersTest {
 
     @Test
     public void testEqualsIgnoreCase() {
-        assertThat(AsciiString.contentEqualsIgnoreCase(null, null), is(true));
-        assertThat(AsciiString.contentEqualsIgnoreCase(null, "foo"), is(false));
-        assertThat(AsciiString.contentEqualsIgnoreCase("bar", null), is(false));
-        assertThat(AsciiString.contentEqualsIgnoreCase("FoO", "fOo"), is(true));
+        assertTrue(AsciiString.contentEqualsIgnoreCase(null, null));
+        assertFalse(AsciiString.contentEqualsIgnoreCase(null, "foo"));
+        assertFalse(AsciiString.contentEqualsIgnoreCase("bar", null));
+        assertTrue(AsciiString.contentEqualsIgnoreCase("FoO", "fOo"));
     }
 
     @Test
@@ -238,23 +243,25 @@ public class DefaultHttpHeadersTest {
     @Test
     public void setCharSequenceValidatesValue() {
         final DefaultHttpHeaders headers = newDefaultDefaultHttpHeaders();
-        assertThrows(IllegalArgumentException.class, new Executable() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, new Executable() {
             @Override
             public void execute() throws Throwable {
                 headers.set(HEADER_NAME, ILLEGAL_VALUE);
             }
         });
+        assertTrue(exception.getMessage().contains(HEADER_NAME));
     }
 
     @Test
     public void setIterableValidatesValue() {
         final DefaultHttpHeaders headers = newDefaultDefaultHttpHeaders();
-        assertThrows(IllegalArgumentException.class, new Executable() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, new Executable() {
             @Override
             public void execute() throws Throwable {
                 headers.set(HEADER_NAME, Collections.singleton(ILLEGAL_VALUE));
             }
         });
+        assertTrue(exception.getMessage().contains(HEADER_NAME));
     }
 
     @Test
@@ -285,6 +292,95 @@ public class DefaultHttpHeadersTest {
 
         String[] namesArray = nettyHeaders.toArray(EmptyArrays.EMPTY_STRINGS);
         assertArrayEquals(namesArray, new String[] { HttpHeaderNames.CONTENT_LENGTH.toString() });
+    }
+
+    @Test
+    public void names() {
+        HttpHeaders headers = new DefaultHttpHeaders(true)
+                .add(ACCEPT, APPLICATION_JSON)
+                .add(CONTENT_LENGTH, ZERO)
+                .add(CONNECTION, CLOSE);
+        assertFalse(headers.isEmpty());
+        assertEquals(3, headers.size());
+        Set<String> names = headers.names();
+        assertEquals(3, names.size());
+        assertTrue(names.contains(ACCEPT.toString()));
+        assertTrue(names.contains(CONTENT_LENGTH.toString()));
+        assertTrue(names.contains(CONNECTION.toString()));
+    }
+
+    @Test
+    public void testContainsName() {
+        HttpHeaders headers = new DefaultHttpHeaders(true)
+                .add(CONTENT_LENGTH, "36");
+        assertTrue(headers.contains("Content-Length"));
+        assertTrue(headers.contains("content-length"));
+        assertTrue(headers.contains(CONTENT_LENGTH));
+        headers.remove(CONTENT_LENGTH);
+        assertFalse(headers.contains("Content-Length"));
+        assertFalse(headers.contains("content-length"));
+        assertFalse(headers.contains(CONTENT_LENGTH));
+
+        assertFalse(headers.contains("non-existent-name"));
+        assertFalse(headers.contains(new AsciiString("non-existent-name")));
+    }
+
+    @Test
+    public void copyShouldKeepValueValidation() {
+        final HttpHeaders copy = new DefaultHttpHeaders().set("a", "b").copy();
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                copy.set("x", "a\r\nInjected: 1");
+            }
+        });
+    }
+
+    @Test
+    public void copyOfNonValidatingHeadersShouldNotValidateValues() {
+        HttpHeaders copy = new DefaultHttpHeaders(false).copy();
+        copy.set("x", "a\r\nb");
+        assertEquals("a\r\nb", copy.get("x"));
+    }
+
+    @Test
+    public void addingHeadersWithoutValueValidationShouldValidate() {
+        final HttpHeaders tainted = DefaultHttpHeadersFactory.headersFactory()
+                .withValueValidation(false).newHeaders();
+        tainted.set("x", "a\r\nInjected: 1");
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                new DefaultHttpHeaders().add(tainted);
+            }
+        });
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                new DefaultHttpHeaders().set(tainted);
+            }
+        });
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                new DefaultHttpHeaders().setAll(tainted);
+            }
+        });
+    }
+
+    @Test
+    public void iteratorEntrySetValueShouldValidate() {
+        final HttpHeaders headers = new DefaultHttpHeaders().set("x", "y");
+        final Map.Entry<CharSequence, CharSequence> entry = headers.iteratorCharSequence().next();
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                entry.setValue("a\r\nInjected: 1");
+            }
+        });
+        assertEquals("y", headers.get("x"));
+        entry.setValue("z");
+        assertEquals("z", headers.get("x"));
     }
 
     private static void assertDefaultValues(final DefaultHttpHeaders headers, final HeaderValue headerValue) {

@@ -16,7 +16,6 @@
 package io.netty.util.concurrent;
 
 import io.netty.util.internal.InternalThreadLocalMap;
-import io.netty.util.internal.UnstableApi;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -98,7 +97,6 @@ public class FastThreadLocalThread extends Thread {
     /**
      * Returns {@code true} if {@link FastThreadLocal#removeAll()} will be called once {@link #run()} completes.
      */
-    @UnstableApi
     public boolean willCleanupFastThreadLocals() {
         return cleanupFastThreadLocals;
     }
@@ -106,7 +104,6 @@ public class FastThreadLocalThread extends Thread {
     /**
      * Returns {@code true} if {@link FastThreadLocal#removeAll()} will be called once {@link Thread#run()} completes.
      */
-    @UnstableApi
     public static boolean willCleanupFastThreadLocals(Thread thread) {
         return thread instanceof FastThreadLocalThread &&
                 ((FastThreadLocalThread) thread).willCleanupFastThreadLocals();
@@ -120,7 +117,7 @@ public class FastThreadLocalThread extends Thread {
      * Subclasses of {@link FastThreadLocalThread} can override this method if they are not meant to be used for
      * running event-loops.
      *
-     * @return {@code false}, unless overriden by a subclass.
+     * @return {@code false}, unless overridden by a subclass.
      */
     public boolean permitBlockingCalls() {
         return false;
